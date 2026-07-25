@@ -67,6 +67,19 @@ func (s *Server) withUserAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// withAdminAuth restricts configuration-changing control-plane endpoints to
+// administrators. Authentication alone is insufficient because managed
+// configuration can alter executable templates and policy.
+func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return s.withUserAuth(func(w http.ResponseWriter, r *http.Request) {
+		if currentUser(r).Role != "admin" {
+			writeError(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
+		next(w, r)
+	})
+}
+
 func currentUser(r *http.Request) model.User {
 	user, _ := r.Context().Value(userContextKey).(model.User)
 	return user

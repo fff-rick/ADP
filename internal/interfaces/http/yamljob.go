@@ -1,19 +1,16 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"adp/internal/domain/model"
+	"adp/internal/infrastructure/llm"
 )
 
 // handleGenerateYAML uses AI to convert NL input into YAML job definition.
@@ -48,12 +45,12 @@ func (s *Server) handleGenerateYAML(w http.ResponseWriter, r *http.Request) {
 func (s *Server) generateYAMLFromInput(_ *http.Request, input string) (string, *YAMLJobSpec, bool, error) {
 	var aiErr error
 	// Try LLM if configured.
-	if s.config.LLMBaseURL != "" {
+	if s.llmClient != nil {
 		prompt := s.injectAIContextIntoPrompt(s.promptOrDefault("yaml", ""))
 		if strings.TrimSpace(prompt) == "" {
 			aiErr = errors.New("YAML generator prompt is not configured")
 		} else {
-			yamlStr, err := callLLMForYAML(s.config.LLMBaseURL, s.config.LLMAPIKey, s.config.LLMModel, prompt, input)
+			yamlStr, err := s.llmClient.Chat(context.Background(), []llm.Message{{Role: "system", Content: prompt}, {Role: "user", Content: input}})
 			if err != nil {
 				aiErr = err
 			} else {
@@ -81,65 +78,6 @@ func (s *Server) generateYAMLFromInput(_ *http.Request, input string) (string, *
 	}
 	s.validateAndFixYAML(spec) //nolint:errcheck
 	return yamlStr, spec, false, aiErr
-}
-
-func callLLMForYAML(baseURL, apiKey, model, systemPrompt, input string) (string, error) {
-	body, _ := json.Marshal(map[string]any{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": input},
-		},
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create LLM request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("call LLM: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		var apiErr struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error.Message != "" {
-			return "", fmt.Errorf("LLM API status %d: %s", resp.StatusCode, apiErr.Error.Message)
-		}
-		return "", fmt.Errorf("LLM API status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode LLM response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", errors.New("LLM returned no choices")
-	}
-	content := strings.TrimSpace(result.Choices[0].Message.Content)
-	if content == "" {
-		return "", errors.New("LLM returned empty content")
-	}
-	return content, nil
 }
 
 func stripMarkdownFence(value string) string {

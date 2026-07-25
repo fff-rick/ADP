@@ -124,3 +124,20 @@ rules:
 		t.Fatalf("managed YAML rule not applied: spec=%+v err=%v", spec, err)
 	}
 }
+
+func TestManagedConfigRequiresAdmin(t *testing.T) {
+	server := NewServer(Config{Addr: ":0", AdminUsername: "admin", AdminPassword: "admin123", AuthSecret: "secret", WorkerSharedToken: "worker-secret"}, nil, nil)
+	app := httptest.NewServer(server.httpServer.Handler)
+	defer app.Close()
+	if _, err := server.authService.CreateUser("operator", "operator123", "operator"); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := server.authService.Login("operator", "operator123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := mustJSONRequest(t, app.Client(), http.MethodPost, app.URL+"/api/v1/configs/prompts", token, map[string]any{"yaml_content": "code: task_parser\ncontent: test\n"}, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("operator config save status = %d, want %d", status, http.StatusForbidden)
+	}
+}
