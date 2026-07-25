@@ -21,7 +21,7 @@ func TestDashboardUIRoutesAndSummary(t *testing.T) {
 	app := httptest.NewServer(server.httpServer.Handler)
 	defer app.Close()
 
-	for _, route := range []string{"/", "/login", "/users", "/workers", "/jobs", "/tasks"} {
+	for _, route := range []string{"/", "/login", "/users", "/workers", "/jobs", "/tasks", "/configs"} {
 		resp, err := app.Client().Get(app.URL + route)
 		if err != nil {
 			t.Fatalf("GET %s error = %v", route, err)
@@ -36,6 +36,9 @@ func TestDashboardUIRoutesAndSummary(t *testing.T) {
 		}
 		if !strings.Contains(string(body), "ADP") {
 			t.Fatalf("ui page missing expected content for %s: %s", route, string(body))
+		}
+		if route != "/login" && !strings.Contains(string(body), "href=\"/configs\"") {
+			t.Fatalf("ui page missing configs navigation for %s", route)
 		}
 	}
 

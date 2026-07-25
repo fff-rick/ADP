@@ -12,7 +12,12 @@
 
 可通过 `/api/v1/configs/{kind}` 导入这些文件，由服务端校验、持久化并在运行时生效。
 
-对于空数据库，使用 `--managed-config-dir configs/managed` 启动服务（默认值）会自动导入运行态数据库中尚不存在的源 YAML。启动导入不会覆盖已有运行态配置；需要修改已导入配置时，请使用仅管理员可调用的配置 API。
+对于空数据库，使用 `--managed-config-dir configs/managed` 启动服务（默认值）会自动导入运行态数据库中尚不存在的源 YAML。
+
+- `--managed-config-sync-mode missing`：默认模式，只导入缺失配置；发现源文件与运行态不同会保留运行态配置。
+- `--managed-config-sync-mode enforce`：GitOps 模式，启动时以仓库 YAML 为准，覆盖同 ID 的运行态配置。
+
+管理员可调用 `GET /api/v1/configs/sync` 查看导入、同步和漂移情况；调用 `POST /api/v1/configs/sync?enforce=true` 可立即按 GitOps 源文件强制同步。上述同步操作都会记录审计日志。
 
 示例：
 

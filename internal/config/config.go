@@ -4,18 +4,19 @@ import "time"
 
 // ServerConfig holds all configuration for the ADP server.
 type ServerConfig struct {
-	Addr              string
-	WorkerGRPCAddr    string
-	DBDSN             string
-	AdminUsername     string
-	AdminPassword     string
-	AuthSecret        string
-	WorkerSharedToken string
-	LLMBaseURL        string
-	LLMAPIKey         string
-	LLMModel          string
-	AIContextPath     string
-	ManagedConfigDir  string
+	Addr                  string
+	WorkerGRPCAddr        string
+	DBDSN                 string
+	AdminUsername         string
+	AdminPassword         string
+	AuthSecret            string
+	WorkerSharedToken     string
+	LLMBaseURL            string
+	LLMAPIKey             string
+	LLMModel              string
+	AIContextPath         string
+	ManagedConfigDir      string
+	ManagedConfigSyncMode string
 }
 
 // WorkerConfig holds all configuration for the ADP worker.

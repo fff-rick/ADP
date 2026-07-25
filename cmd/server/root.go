@@ -62,6 +62,7 @@ func init() {
 	serveCmd.Flags().String("llm-model", "gpt-4", "LLM model name")
 	serveCmd.Flags().String("ai-context", "", "Path to AI context YAML file")
 	serveCmd.Flags().String("managed-config-dir", "configs/managed", "Source-controlled managed YAML configuration directory")
+	serveCmd.Flags().String("managed-config-sync-mode", "missing", "Managed config sync mode: missing or enforce")
 	serveCmd.Flags().String("config", "", "Path to YAML config file")
 
 	// Bind flags to viper.
@@ -78,6 +79,7 @@ func init() {
 	_ = viper.BindPFlag("llm.model", serveCmd.Flags().Lookup("llm-model"))
 	_ = viper.BindPFlag("ai_context", serveCmd.Flags().Lookup("ai-context"))
 	_ = viper.BindPFlag("managed_config_dir", serveCmd.Flags().Lookup("managed-config-dir"))
+	_ = viper.BindPFlag("managed_config_sync_mode", serveCmd.Flags().Lookup("managed-config-sync-mode"))
 
 	// Viper config: env vars with ADP_ prefix, config file support
 	viper.SetEnvPrefix("ADP")
@@ -188,18 +190,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	cfg := config.ServerConfig{
-		Addr:              viper.GetString("addr"),
-		WorkerGRPCAddr:    viper.GetString("worker.grpc_addr"),
-		DBDSN:             viper.GetString("db.dsn"),
-		AdminUsername:     viper.GetString("auth.admin_username"),
-		AdminPassword:     viper.GetString("auth.admin_password"),
-		AuthSecret:        viper.GetString("auth.secret"),
-		WorkerSharedToken: viper.GetString("auth.worker_token"),
-		LLMBaseURL:        viper.GetString("llm.base_url"),
-		LLMAPIKey:         viper.GetString("llm.api_key"),
-		LLMModel:          viper.GetString("llm.model"),
-		AIContextPath:     viper.GetString("ai_context"),
-		ManagedConfigDir:  viper.GetString("managed_config_dir"),
+		Addr:                  viper.GetString("addr"),
+		WorkerGRPCAddr:        viper.GetString("worker.grpc_addr"),
+		DBDSN:                 viper.GetString("db.dsn"),
+		AdminUsername:         viper.GetString("auth.admin_username"),
+		AdminPassword:         viper.GetString("auth.admin_password"),
+		AuthSecret:            viper.GetString("auth.secret"),
+		WorkerSharedToken:     viper.GetString("auth.worker_token"),
+		LLMBaseURL:            viper.GetString("llm.base_url"),
+		LLMAPIKey:             viper.GetString("llm.api_key"),
+		LLMModel:              viper.GetString("llm.model"),
+		AIContextPath:         viper.GetString("ai_context"),
+		ManagedConfigDir:      viper.GetString("managed_config_dir"),
+		ManagedConfigSyncMode: viper.GetString("managed_config_sync_mode"),
 	}
 	if err := validateRuntimeConfig(cfg); err != nil {
 		return err
@@ -231,16 +234,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// Create the HTTP server using the existing API.
 	svr := api.NewServer(api.Config{
-		Addr:              cfg.Addr,
-		AdminUsername:     cfg.AdminUsername,
-		AdminPassword:     cfg.AdminPassword,
-		AuthSecret:        cfg.AuthSecret,
-		WorkerSharedToken: cfg.WorkerSharedToken,
-		LLMBaseURL:        cfg.LLMBaseURL,
-		LLMAPIKey:         cfg.LLMAPIKey,
-		LLMModel:          cfg.LLMModel,
-		AIContextPath:     cfg.AIContextPath,
-		ManagedConfigDir:  cfg.ManagedConfigDir,
+		Addr:                  cfg.Addr,
+		AdminUsername:         cfg.AdminUsername,
+		AdminPassword:         cfg.AdminPassword,
+		AuthSecret:            cfg.AuthSecret,
+		WorkerSharedToken:     cfg.WorkerSharedToken,
+		LLMBaseURL:            cfg.LLMBaseURL,
+		LLMAPIKey:             cfg.LLMAPIKey,
+		LLMModel:              cfg.LLMModel,
+		AIContextPath:         cfg.AIContextPath,
+		ManagedConfigDir:      cfg.ManagedConfigDir,
+		ManagedConfigSyncMode: cfg.ManagedConfigSyncMode,
 	}, repo, authService)
 
 	grpcListener, err := net.Listen("tcp", cfg.WorkerGRPCAddr)
@@ -302,6 +306,9 @@ func validateRuntimeConfig(cfg config.ServerConfig) error {
 	}
 	if strings.EqualFold(os.Getenv("ADP_ENV"), "production") && strings.TrimSpace(cfg.DBDSN) == "" {
 		return errors.New("ADP_DB_DSN is required when ADP_ENV=production")
+	}
+	if mode := strings.TrimSpace(cfg.ManagedConfigSyncMode); mode != "" && mode != "missing" && mode != "enforce" {
+		return fmt.Errorf("managed config sync mode must be missing or enforce, got %q", mode)
 	}
 	return nil
 }

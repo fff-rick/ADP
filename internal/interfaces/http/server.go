@@ -28,16 +28,17 @@ import (
 )
 
 type Config struct {
-	Addr              string
-	AdminUsername     string
-	AdminPassword     string
-	AuthSecret        string
-	WorkerSharedToken string
-	LLMBaseURL        string
-	LLMAPIKey         string
-	LLMModel          string
-	AIContextPath     string
-	ManagedConfigDir  string
+	Addr                  string
+	AdminUsername         string
+	AdminPassword         string
+	AuthSecret            string
+	WorkerSharedToken     string
+	LLMBaseURL            string
+	LLMAPIKey             string
+	LLMModel              string
+	AIContextPath         string
+	ManagedConfigDir      string
+	ManagedConfigSyncMode string
 }
 
 // HasLLM returns true if an LLM is configured.
@@ -119,7 +120,7 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 		systemPrompts: make(map[string]string),
 	}
 
-	if err := server.bootstrapManagedConfigs(cfg.ManagedConfigDir); err != nil {
+	if _, err := server.syncManagedConfigs(cfg.ManagedConfigDir, cfg.ManagedConfigSyncMode == "enforce"); err != nil {
 		log.Printf("WARNING: failed to bootstrap managed configs: %v", err)
 	}
 	if err := server.reloadManagedConfigs(); err != nil {
@@ -206,13 +207,22 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	return server
 }
 
-// bootstrapManagedConfigs imports missing source-controlled YAML files without
-// overwriting runtime edits. Use the config API for deliberate updates.
-func (s *Server) bootstrapManagedConfigs(dir string) error {
+type managedConfigSyncReport struct {
+	Imported int      `json:"imported"`
+	Updated  int      `json:"updated"`
+	InSync   int      `json:"in_sync"`
+	Drifted  []string `json:"drifted,omitempty"`
+}
+
+// syncManagedConfigs reconciles source-controlled YAML with runtime state.
+// In missing mode it only imports absent configurations; enforce mode makes
+// source YAML authoritative, which is intended for GitOps deployments.
+func (s *Server) syncManagedConfigs(dir string, enforce bool) (managedConfigSyncReport, error) {
+	report := managedConfigSyncReport{}
 	if strings.TrimSpace(dir) == "" {
-		return nil
+		return report, nil
 	}
-	return filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -231,12 +241,30 @@ func (s *Server) bootstrapManagedConfigs(dir string) error {
 		if err != nil {
 			return fmt.Errorf("validate %s: %w", path, err)
 		}
-		if _, err := s.repo.GetManagedConfig(kind, id); err == nil {
+		existing, getErr := s.repo.GetManagedConfig(kind, id)
+		if getErr != nil {
+			_, err = s.repo.SaveManagedConfig(model.ManagedConfig{ID: id, Kind: kind, Name: name, YAMLContent: string(content), Active: true})
+			if err == nil {
+				report.Imported++
+			}
+			return err
+		}
+		if yamlSHA256(existing.YAMLContent) == yamlSHA256(string(content)) {
+			report.InSync++
 			return nil
 		}
-		_, err = s.repo.SaveManagedConfig(model.ManagedConfig{ID: id, Kind: kind, Name: name, YAMLContent: string(content), Active: true})
+		key := kind + "/" + id
+		if !enforce {
+			report.Drifted = append(report.Drifted, key)
+			return nil
+		}
+		_, err = s.repo.SaveManagedConfig(model.ManagedConfig{ID: id, Kind: kind, Name: name, YAMLContent: string(content), Active: true, CreatedAt: existing.CreatedAt})
+		if err == nil {
+			report.Updated++
+		}
 		return err
 	})
+	return report, err
 }
 
 func (s *Server) Start() error {
