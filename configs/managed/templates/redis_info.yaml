@@ -1,0 +1,6 @@
+code: redis_info
+name: Redis INFO
+tool_type: shell
+command: redis-cli -h {{.Host}} -p {{.Port}} INFO {{.Section}}
+risk_level: low
+parameters: [{name: ServiceProfile, required: true}, {name: ServiceType, required: true, default: redis}, {name: Host, required: true}, {name: Port, required: true}, {name: Section, required: false, default: memory}]

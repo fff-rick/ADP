@@ -1,0 +1,28 @@
+trigger_type: nginx_unreachable
+title: Nginx 不可访问诊断
+keywords: [nginx, 网站打不开, http 服务不可用, 无法访问, unreachable]
+steps:
+  - step_no: 1
+    name: 检查 Nginx 进程
+    description: 确认 Nginx 进程是否运行。
+    template_code: check_process
+    parameters: {ServiceProfile: nginx_prod, ServiceType: nginx}
+    timeout_seconds: 15
+  - step_no: 2
+    name: 检查监听端口
+    description: 确认 HTTP 端口是否处于监听状态。
+    template_code: check_port
+    parameters: {ServiceProfile: nginx_prod, ServiceType: nginx}
+    timeout_seconds: 15
+  - step_no: 3
+    name: 读取错误日志
+    description: 获取最近的 Nginx 错误日志。
+    template_code: read_log_tail
+    parameters: {ServiceProfile: nginx_prod, ServiceType: nginx, Lines: "50"}
+    timeout_seconds: 15
+  - step_no: 4
+    name: HTTP 健康检查
+    description: 对服务发起 HTTP 请求验证响应。
+    template_code: http_health_check
+    parameters: {ServiceProfile: adp_http, ServiceType: http, Timeout: "10"}
+    timeout_seconds: 20

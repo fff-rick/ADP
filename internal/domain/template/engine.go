@@ -16,13 +16,7 @@ type Engine struct {
 
 // NewEngine creates an Engine preloaded with built-in templates.
 func NewEngine() *Engine {
-	e := &Engine{
-		templates: make(map[string]model.CommandTemplate),
-	}
-	for _, t := range builtinTemplates() {
-		e.templates[t.Code] = t
-	}
-	return e
+	return &Engine{templates: make(map[string]model.CommandTemplate)}
 }
 
 // RegisterModule converts a Module to a CommandTemplate and registers it.

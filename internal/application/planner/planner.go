@@ -12,106 +12,10 @@ import (
 	"adp/internal/infrastructure/llm"
 )
 
-const planSystemPrompt = `You are a fault diagnosis planner for an operations system.
-Given a fault description, generate a multi-step diagnosis plan.
-
-Supported trigger types:
-- nginx_unreachable: Nginx/service unreachable
-- redis_slow: Redis performance issues
-
-Output ONLY valid JSON, no extra text:
-{
-  "title": "...",
-  "trigger_type": "nginx_unreachable|redis_slow",
-  "steps": [
-    {"name": "...", "template_code": "...", "parameters": {...}, "timeout_seconds": 30}
-  ]
-}
-
-Available templates for steps:
-- check_process: parameter ProcessName
-- check_port: parameter Port
-- read_log_tail: parameters LogFile, Lines
-- redis_ping: parameters Host, Port
-- redis_info: parameters Host, Port, Section
-- redis_slowlog_get: parameters Host, Port, Count
-- redis_client_list: parameters Host, Port
-- http_health_check: parameters URL, Timeout`
-
-// predefinedPlans maps trigger types to diagnosis step sequences.
 type PlanDefinition struct {
 	Title    string
 	Keywords []string
 	Steps    []model.DiagnosisStep
-}
-
-var predefinedPlans = map[string]PlanDefinition{
-	"nginx_unreachable": {
-		Title: "Nginx 不可访问诊断",
-		Steps: []model.DiagnosisStep{
-			{
-				StepNo: 1, Name: "检查 Nginx 进程存活状态",
-				Description:  "确认 Nginx 主进程是否在运行",
-				TemplateCode: "check_process",
-				Parameters:   map[string]string{"ServiceProfile": "nginx_prod"},
-				TimeoutSec:   15,
-			},
-			{
-				StepNo: 2, Name: "检查 80 端口监听状态",
-				Description:  "确认是否有进程监听 80 端口",
-				TemplateCode: "check_port",
-				Parameters:   map[string]string{"ServiceProfile": "nginx_prod"},
-				TimeoutSec:   15,
-			},
-			{
-				StepNo: 3, Name: "读取 Nginx 错误日志",
-				Description:  "获取最近 50 行错误日志排查异常",
-				TemplateCode: "read_log_tail",
-				Parameters:   map[string]string{"ServiceProfile": "nginx_prod", "Lines": "50"},
-				TimeoutSec:   15,
-			},
-			{
-				StepNo: 4, Name: "HTTP 健康检查",
-				Description:  "对本地 Nginx 发起 HTTP 请求验证响应",
-				TemplateCode: "http_health_check",
-				Parameters:   map[string]string{"ServiceProfile": "adp_http", "Timeout": "10"},
-				TimeoutSec:   20,
-			},
-		},
-	},
-	"redis_slow": {
-		Title: "Redis 响应慢诊断",
-		Steps: []model.DiagnosisStep{
-			{
-				StepNo: 1, Name: "Redis 存活检查",
-				Description:  "通过 PING 确认 Redis 服务是否正常响应",
-				TemplateCode: "redis_ping",
-				Parameters:   map[string]string{"ServiceProfile": "redis_prod"},
-				TimeoutSec:   10,
-			},
-			{
-				StepNo: 2, Name: "Redis 内存使用分析",
-				Description:  "获取 Redis 内存使用情况，排查是否因内存不足导致变慢",
-				TemplateCode: "redis_info",
-				Parameters:   map[string]string{"ServiceProfile": "redis_prod", "Section": "memory"},
-				TimeoutSec:   15,
-			},
-			{
-				StepNo: 3, Name: "Redis 慢日志查询",
-				Description:  "获取最近 10 条慢日志，定位执行耗时的命令",
-				TemplateCode: "redis_slowlog_get",
-				Parameters:   map[string]string{"ServiceProfile": "redis_prod", "Count": "10"},
-				TimeoutSec:   15,
-			},
-			{
-				StepNo: 4, Name: "Redis 当前连接数检查",
-				Description:  "查看当前客户端连接数，排查连接数过高问题",
-				TemplateCode: "redis_client_list",
-				Parameters:   map[string]string{"ServiceProfile": "redis_prod"},
-				TimeoutSec:   10,
-			},
-		},
-	},
 }
 
 // PlanStore persists diagnosis plans in memory.
@@ -160,10 +64,11 @@ func (s *PlanStore) Update(id string, fn func(plan *model.DiagnosisPlan)) (model
 
 // Planner generates diagnosis plans from fault descriptions.
 type Planner struct {
-	llmClient   llm.Client
-	templates   *template.Engine
-	store       *PlanStore
-	customPlans map[string]PlanDefinition
+	llmClient    llm.Client
+	templates    *template.Engine
+	store        *PlanStore
+	customPlans  map[string]PlanDefinition
+	systemPrompt string
 }
 
 func New(llmClient llm.Client, templates *template.Engine, store *PlanStore) *Planner {
@@ -174,6 +79,9 @@ func New(llmClient llm.Client, templates *template.Engine, store *PlanStore) *Pl
 		customPlans: make(map[string]PlanDefinition),
 	}
 }
+
+// SetSystemPrompt replaces the API-managed LLM planner prompt.
+func (p *Planner) SetSystemPrompt(prompt string) { p.systemPrompt = strings.TrimSpace(prompt) }
 
 // Store returns the plan store.
 func (p *Planner) Store() *PlanStore {
@@ -187,20 +95,7 @@ func (p *Planner) GeneratePlan(ctx context.Context, description string) (*model.
 		return nil, fmt.Errorf("description is empty")
 	}
 
-	triggerType := classifyTrigger(description)
-	predefined, ok := p.customPlans[triggerType]
-	if !ok {
-		customTriggerType, customDefinition, customOK := p.matchCustomPlan(description)
-		if customOK {
-			triggerType = customTriggerType
-			predefined = customDefinition
-			ok = true
-		}
-	}
-	if !ok {
-		predefined, ok = predefinedPlans[triggerType]
-	}
-
+	triggerType, predefined, ok := p.matchCustomPlan(description)
 	if ok {
 		return p.buildFromPredefined(description, triggerType, predefined), nil
 	}
@@ -209,7 +104,7 @@ func (p *Planner) GeneratePlan(ctx context.Context, description string) (*model.
 		return p.buildFromLLM(ctx, description)
 	}
 
-	return nil, fmt.Errorf("no predefined plan for trigger type: %s (and LLM not configured)", triggerType)
+	return nil, fmt.Errorf("no managed diagnosis plan matches the description (and LLM is not configured)")
 }
 
 func (p *Planner) matchCustomPlan(description string) (string, PlanDefinition, bool) {
@@ -256,7 +151,7 @@ func (p *Planner) RegisterPlanDefinition(triggerType string, definition PlanDefi
 
 func (p *Planner) buildFromLLM(ctx context.Context, description string) (*model.DiagnosisPlan, error) {
 	messages := []llm.Message{
-		{Role: "system", Content: planSystemPrompt},
+		{Role: "system", Content: p.systemPrompt},
 		{Role: "user", Content: description},
 	}
 
@@ -270,26 +165,7 @@ func (p *Planner) buildFromLLM(ctx context.Context, description string) (*model.
 	// For now, return error if no predefined plan and LLM response can't be parsed.
 	// Full LLM parsing would require a more robust approach.
 	_ = raw
-	return nil, fmt.Errorf("LLM-based plan generation not yet implemented for custom scenarios; supported types: nginx_unreachable, redis_slow")
-}
-
-func classifyTrigger(description string) string {
-	lower := strings.ToLower(description)
-
-	nginxKeywords := []string{"nginx", "网站", "网页", "http", "web", "不可访问", "无法访问", "打不开", "unreachable"}
-	redisKeywords := []string{"redis", "缓存", "cache", "响应慢", "slow", "慢查询", "性能"}
-
-	for _, kw := range nginxKeywords {
-		if strings.Contains(lower, kw) {
-			return "nginx_unreachable"
-		}
-	}
-	for _, kw := range redisKeywords {
-		if strings.Contains(lower, kw) {
-			return "redis_slow"
-		}
-	}
-	return lower
+	return nil, fmt.Errorf("LLM-based plan generation is not enabled; add a managed diagnosis plan for this scenario")
 }
 
 func extractJSON(s string) string {

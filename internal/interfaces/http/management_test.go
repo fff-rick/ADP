@@ -16,6 +16,7 @@ func TestUserWorkerAndTaskManagementEndpoints(t *testing.T) {
 		AuthSecret:        "secret",
 		WorkerSharedToken: "worker-secret",
 	}, nil, nil)
+	installTestParserRules(t, server)
 	app := httptest.NewServer(server.httpServer.Handler)
 	defer app.Close()
 

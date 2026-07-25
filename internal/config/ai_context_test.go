@@ -31,7 +31,7 @@ services:
 		t.Fatalf("unexpected service: %+v", ctx.Services[0])
 	}
 
-	params := map[string]string{}
+	params := map[string]string{"ServiceType": "redis"}
 	ctx.FillDefaults(params, "redis_ping")
 	if params["Host"] != "10.0.0.2" || params["Port"] != "6380" {
 		t.Fatalf("redis defaults = %+v", params)
@@ -64,13 +64,13 @@ defaults:
 		t.Fatalf("services len = %d, want 2", len(ctx.Services))
 	}
 
-	backupParams := map[string]string{}
+	backupParams := map[string]string{"ServiceType": "mysql"}
 	ctx.FillDefaults(backupParams, "mysql_backup")
 	if backupParams["Host"] != "127.0.0.1" || backupParams["Port"] != "3306" || backupParams["User"] != "root" {
 		t.Fatalf("mysql defaults = %+v", backupParams)
 	}
 
-	logParams := map[string]string{}
+	logParams := map[string]string{"ServiceType": "nginx"}
 	ctx.FillDefaults(logParams, "read_log_tail")
 	if logParams["LogFile"] != "/var/log/nginx/error.log" {
 		t.Fatalf("log defaults = %+v", logParams)

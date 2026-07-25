@@ -188,40 +188,20 @@ func (c *AIContext) FillDefaults(params map[string]string, moduleCode string) {
 	if params == nil {
 		return
 	}
-
-	switch moduleCode {
-	case "mysql_backup":
-		mysql := c.FirstService("mysql")
-		fillParam(params, "Host", mysql.Host)
-		fillParam(params, "Port", mysql.Port)
-		fillParam(params, "User", mysql.User)
-	case "redis_ping", "redis_info", "redis_slowlog_get", "redis_client_list":
-		redis := c.FirstService("redis")
-		fillParam(params, "Host", redis.Host)
-		fillParam(params, "Port", redis.Port)
-	case "read_log_tail":
-		serviceType := strings.ToLower(strings.TrimSpace(params["ServiceType"]))
-		if serviceType == "" {
-			serviceType = "nginx"
+	_ = moduleCode // Template-specific defaults belong in managed template/rule YAML.
+	service := c.FirstService(strings.ToLower(strings.TrimSpace(params["ServiceType"])))
+	fillParam(params, "Host", service.Host)
+	fillParam(params, "Port", service.Port)
+	fillParam(params, "User", service.User)
+	fillParam(params, "ProcessName", service.Extra["process"])
+	fillParam(params, "Process", service.Extra["process"])
+	fillParam(params, "LogFile", firstPath(service.Logs))
+	if params["URL"] == "" && service.Host != "" {
+		port := service.Port
+		if port == "" {
+			port = "80"
 		}
-		service := c.FirstService(serviceType)
-		fillParam(params, "LogFile", firstPath(service.Logs))
-	case "check_process":
-		service := c.FirstService(strings.ToLower(strings.TrimSpace(params["ServiceType"])))
-		fillParam(params, "ProcessName", service.Extra["process"])
-		fillParam(params, "Process", service.Extra["process"])
-	case "check_port":
-		service := c.FirstService(strings.ToLower(strings.TrimSpace(params["ServiceType"])))
-		fillParam(params, "Port", service.Port)
-	case "http_health_check":
-		service := c.FirstService(strings.ToLower(strings.TrimSpace(params["ServiceType"])))
-		if params["URL"] == "" && service.Host != "" {
-			port := service.Port
-			if port == "" {
-				port = "80"
-			}
-			params["URL"] = "http://" + service.Host + ":" + port
-		}
+		params["URL"] = "http://" + service.Host + ":" + port
 	}
 }
 

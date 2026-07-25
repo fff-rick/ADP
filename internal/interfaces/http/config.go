@@ -8,6 +8,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"adp/internal/application/analyzer"
+	"adp/internal/application/parser"
 	"adp/internal/application/planner"
 	"adp/internal/domain/model"
 )
@@ -17,6 +19,9 @@ const (
 	configKindPolicy        = "policies"
 	configKindPrompt        = "prompts"
 	configKindDiagnosisPlan = "diagnosis_plans"
+	configKindParserRules   = "parser_rules"
+	configKindYAMLRules     = "yaml_rules"
+	configKindAnalysisRules = "analysis_rules"
 )
 
 type managedConfigRequest struct {
@@ -63,6 +68,24 @@ type diagnosisPlanConfigYAML struct {
 	Title       string              `yaml:"title"`
 	Keywords    []string            `yaml:"keywords"`
 	Steps       []diagnosisStepYAML `yaml:"steps"`
+}
+
+type parserRulesConfigYAML struct {
+	ID    string              `yaml:"id"`
+	Name  string              `yaml:"name"`
+	Rules []parser.IntentRule `yaml:"rules"`
+}
+
+type yamlRulesConfigYAML struct {
+	ID    string               `yaml:"id"`
+	Name  string               `yaml:"name"`
+	Rules []YAMLGenerationRule `yaml:"rules"`
+}
+
+type analysisRulesConfigYAML struct {
+	ID    string                  `yaml:"id"`
+	Name  string                  `yaml:"name"`
+	Rules []analyzer.AnalysisRule `yaml:"rules"`
 }
 
 type diagnosisStepYAML struct {
@@ -194,7 +217,7 @@ func managedConfigPath(path string) (string, string) {
 
 func isSupportedConfigKind(kind string) bool {
 	switch kind {
-	case configKindTemplate, configKindPolicy, configKindPrompt, configKindDiagnosisPlan:
+	case configKindTemplate, configKindPolicy, configKindPrompt, configKindDiagnosisPlan, configKindParserRules, configKindYAMLRules, configKindAnalysisRules:
 		return true
 	default:
 		return false
@@ -245,6 +268,42 @@ func managedConfigIdentity(kind, raw string) (string, string, error) {
 			return "", "", errors.New("diagnosis plan steps are required")
 		}
 		return cfg.TriggerType, fallbackName(cfg.Title, cfg.TriggerType), nil
+	case configKindParserRules:
+		var cfg parserRulesConfigYAML
+		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+			return "", "", fmt.Errorf("invalid parser rules yaml: %w", err)
+		}
+		if cfg.ID == "" {
+			cfg.ID = "task_parser"
+		}
+		if len(cfg.Rules) == 0 {
+			return "", "", errors.New("parser rules are required")
+		}
+		return cfg.ID, fallbackName(cfg.Name, cfg.ID), nil
+	case configKindYAMLRules:
+		var cfg yamlRulesConfigYAML
+		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+			return "", "", fmt.Errorf("invalid YAML rules config: %w", err)
+		}
+		if cfg.ID == "" {
+			cfg.ID = "yaml_generator"
+		}
+		if len(cfg.Rules) == 0 {
+			return "", "", errors.New("YAML generation rules are required")
+		}
+		return cfg.ID, fallbackName(cfg.Name, cfg.ID), nil
+	case configKindAnalysisRules:
+		var cfg analysisRulesConfigYAML
+		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+			return "", "", fmt.Errorf("invalid analysis rules config: %w", err)
+		}
+		if cfg.ID == "" {
+			cfg.ID = "diagnosis_analyzer"
+		}
+		if len(cfg.Rules) == 0 {
+			return "", "", errors.New("analysis rules are required")
+		}
+		return cfg.ID, fallbackName(cfg.Name, cfg.ID), nil
 	default:
 		return "", "", fmt.Errorf("unsupported config kind: %s", kind)
 	}
@@ -329,6 +388,30 @@ func (s *Server) applyManagedConfig(cfg model.ManagedConfig) error {
 			Keywords: raw.Keywords,
 			Steps:    convertDiagnosisSteps(raw.Steps),
 		})
+	case configKindParserRules:
+		var raw parserRulesConfigYAML
+		if err := yaml.Unmarshal([]byte(cfg.YAMLContent), &raw); err != nil {
+			return err
+		}
+		if err := s.taskParser.SetRules(raw.Rules); err != nil {
+			return err
+		}
+	case configKindYAMLRules:
+		var raw yamlRulesConfigYAML
+		if err := yaml.Unmarshal([]byte(cfg.YAMLContent), &raw); err != nil {
+			return err
+		}
+		if err := s.SetYAMLRules(raw.Rules); err != nil {
+			return err
+		}
+	case configKindAnalysisRules:
+		var raw analysisRulesConfigYAML
+		if err := yaml.Unmarshal([]byte(cfg.YAMLContent), &raw); err != nil {
+			return err
+		}
+		if err := s.analyzer.SetRules(raw.Rules); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unsupported config kind: %s", cfg.Kind)
 	}
@@ -376,6 +459,8 @@ func (s *Server) applyPromptConfig(code, content string) {
 		s.taskParser.SetSystemPrompt(content)
 	case "diagnosis_analyzer", "analyzer":
 		s.analyzer.SetSystemPrompt(content)
+	case "diagnosis_planner", "planner":
+		s.planner.SetSystemPrompt(content)
 	case "yaml", "yaml_generator":
 		s.systemPrompts["yaml"] = content
 	default:

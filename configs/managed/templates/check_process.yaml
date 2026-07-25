@@ -1,0 +1,10 @@
+code: check_process
+name: 进程存活检查
+description: 检查指定进程。
+tool_type: shell
+command: ps aux | grep -v grep | grep {{.ProcessName}}
+risk_level: low
+parameters:
+  - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+  - {name: ServiceType, description: 服务类型, required: true, default: nginx}
+  - {name: ProcessName, description: 进程名称, required: true}

@@ -30,6 +30,12 @@ const elements = {
   taskOutput: byId("task-output"),
   taskList: byId("task-list"),
   templateList: byId("template-list"),
+  configForm: byId("config-form"),
+  configKind: byId("config-kind"),
+  configFile: byId("config-file"),
+  configYAML: byId("config-yaml"),
+  configList: byId("config-list"),
+  configRefresh: byId("config-refresh"),
   themeToggle: byId("theme-toggle"),
 };
 
@@ -97,6 +103,11 @@ function bindCommonEvents() {
   elements.workerForm && elements.workerForm.addEventListener("submit", handleCreateWorker);
   elements.jobForm && elements.jobForm.addEventListener("submit", handleCreateJob);
   elements.taskForm && elements.taskForm.addEventListener("submit", handleTaskSubmit);
+  elements.configForm && elements.configForm.addEventListener("submit", handleConfigImport);
+  elements.configFile && elements.configFile.addEventListener("change", handleConfigFileSelect);
+  elements.configKind && elements.configKind.addEventListener("change", refreshConfigsPage);
+  elements.configRefresh && elements.configRefresh.addEventListener("click", refreshConfigsPage);
+  elements.configList && elements.configList.addEventListener("click", handleConfigListAction);
   elements.approvalList && elements.approvalList.addEventListener("click", handleApprovalAction);
   elements.themeToggle && elements.themeToggle.addEventListener("click", toggleTheme);
 }
@@ -576,6 +587,9 @@ async function refreshCurrentPage() {
       case "tasks":
         await refreshTasksPage();
         break;
+      case "configs":
+        await refreshConfigsPage();
+        break;
       default:
         await refreshSessionOnly();
         break;
@@ -801,6 +815,59 @@ async function refreshTasksPage() {
     "暂无模板。"
   );
   await refreshYAMLList();
+}
+
+/* ── Managed Configs ── */
+
+function handleConfigFileSelect(event) {
+  var file = event.target.files && event.target.files[0];
+  if (!file || !elements.configYAML) return;
+  var reader = new FileReader();
+  reader.onload = function() {
+    elements.configYAML.value = String(reader.result || "");
+    showToast("已读取 " + file.name);
+  };
+  reader.onerror = function() { showToast("读取文件失败"); };
+  reader.readAsText(file, "UTF-8");
+}
+
+async function handleConfigImport(event) {
+  event.preventDefault();
+  if (!ensureAuthed()) return;
+  var kind = elements.configKind ? elements.configKind.value : "";
+  var yamlContent = elements.configYAML ? elements.configYAML.value.trim() : "";
+  if (!kind || !yamlContent) { showToast("请选择类型并提供 YAML 内容"); return; }
+  try {
+    var result = await authedRequest("/api/v1/configs/" + encodeURIComponent(kind), {
+      method: "POST", body: JSON.stringify({ yaml_content: yamlContent }),
+    });
+    showToast("配置已导入并生效：" + (result.name || result.id));
+    await refreshConfigsPage();
+  } catch (error) { showToast(error.message); }
+}
+
+async function refreshConfigsPage() {
+  if (!state.token || !elements.configList || !elements.configKind) return;
+  var kind = elements.configKind.value;
+  var configs = await authedRequest("/api/v1/configs/" + encodeURIComponent(kind));
+  renderList(elements.configList, configs, function(cfg) {
+    return '<div class="list-card"><div style="flex:1;min-width:0;">' +
+      '<strong style="font-size:.875rem;">' + escapeHTML(cfg.name || cfg.id) + '</strong>' +
+      '<span class="mono" style="margin-left:8px;font-size:.75rem;">' + escapeHTML(cfg.id) + '</span>' +
+      '<pre class="code-block" style="margin:10px 0 0;max-height:130px;overflow:auto;">' + escapeHTML(cfg.yaml_content || "") + '</pre>' +
+      '</div><button class="btn btn-xs btn-ghost" type="button" data-config-delete="' + escapeHTML(cfg.id) + '">删除</button></div>';
+  }, "当前类型暂无已导入配置。");
+}
+
+async function handleConfigListAction(event) {
+  var button = event.target.closest("[data-config-delete]");
+  if (!button || !elements.configKind || !ensureAuthed()) return;
+  var id = button.dataset.configDelete;
+  if (!confirm("确定删除配置 " + id + " 吗？")) return;
+  try {
+    await authedRequest("/api/v1/configs/" + encodeURIComponent(elements.configKind.value) + "/" + encodeURIComponent(id), { method: "DELETE" });
+    showToast("配置已删除"); await refreshConfigsPage();
+  } catch (error) { showToast(error.message); }
 }
 
 /* ── New Feature Handlers ── */

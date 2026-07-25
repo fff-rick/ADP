@@ -52,6 +52,7 @@ type Server struct {
 	analyzer      *analyzer.Analyzer
 	aiContext     *config.AIContext
 	systemPrompts map[string]string
+	yamlRules     []YAMLGenerationRule
 	httpServer    *http.Server
 }
 
@@ -124,6 +125,7 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	mux.HandleFunc("GET /workers", server.handleDashboardPage)
 	mux.HandleFunc("GET /jobs", server.handleDashboardPage)
 	mux.HandleFunc("GET /tasks", server.handleDashboardPage)
+	mux.HandleFunc("GET /configs", server.handleDashboardPage)
 	mux.Handle("GET /static/", server.staticAssetsHandler())
 	// Health & metrics
 	mux.HandleFunc("GET /healthz", server.handleHealthz)
@@ -261,9 +263,6 @@ func writeError(w http.ResponseWriter, statusCode int, err error) {
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
 	out := make(map[string]string, len(in))
 	for k, v := range in {
 		out[k] = v
