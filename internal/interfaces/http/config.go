@@ -100,6 +100,10 @@ type diagnosisStepYAML struct {
 
 func (s *Server) handleManagedConfigActions(w http.ResponseWriter, r *http.Request) {
 	kind, id := managedConfigPath(r.URL.Path)
+	if kind == "sync" {
+		s.handleManagedConfigSync(w, r)
+		return
+	}
 	if kind == "" {
 		writeError(w, http.StatusBadRequest, errors.New("config kind is required"))
 		return
@@ -147,6 +151,29 @@ func (s *Server) handleManagedConfigActions(w http.ResponseWriter, r *http.Reque
 	default:
 		writeError(w, http.StatusMethodNotAllowed, errors.New("unsupported method"))
 	}
+}
+
+// handleManagedConfigSync exposes an administrator-only GitOps reconciliation
+// endpoint. POST defaults to a non-destructive drift scan; pass enforce=true
+// to make source-controlled YAML authoritative.
+func (s *Server) handleManagedConfigSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, errors.New("unsupported method"))
+		return
+	}
+	enforce := r.URL.Query().Get("enforce") == "true"
+	report, err := s.syncManagedConfigs(s.config.ManagedConfigDir, enforce)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.reloadManagedConfigs(); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	user := currentUser(r)
+	s.recordAudit("user", user.Username, "managed_config.synced", "managed_config", s.config.ManagedConfigDir, map[string]any{"enforce": enforce, "imported": report.Imported, "updated": report.Updated, "in_sync": report.InSync, "drifted": report.Drifted})
+	writeJSON(w, http.StatusOK, report)
 }
 
 func (s *Server) handleSaveManagedConfig(w http.ResponseWriter, r *http.Request, kind, pathID string) {

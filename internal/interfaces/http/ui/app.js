@@ -36,6 +36,7 @@ const elements = {
   configYAML: byId("config-yaml"),
   configList: byId("config-list"),
   configRefresh: byId("config-refresh"),
+  configsAccessNote: byId("configs-access-note"),
   themeToggle: byId("theme-toggle"),
 };
 
@@ -848,6 +849,17 @@ async function handleConfigImport(event) {
 
 async function refreshConfigsPage() {
   if (!state.token || !elements.configList || !elements.configKind) return;
+  await refreshSessionOnly();
+  if (!state.user || state.user.role !== "admin") {
+    if (elements.configsAccessNote) {
+      elements.configsAccessNote.textContent = "当前账户不是管理员，无法查看或修改受管配置。";
+    }
+    renderList(elements.configList, [], function() { return ""; }, "请使用管理员账户登录。");
+    return;
+  }
+  if (elements.configsAccessNote) {
+    elements.configsAccessNote.textContent = "当前为管理员，可查看和管理受管配置。";
+  }
   var kind = elements.configKind.value;
   var configs = await authedRequest("/api/v1/configs/" + encodeURIComponent(kind));
   renderList(elements.configList, configs, function(cfg) {
@@ -1022,6 +1034,7 @@ function renderLoggedOutPlaceholders() {
   renderList(elements.jobList, [], function() { return ""; }, "登录后显示 Job 列表。");
   renderList(elements.taskList, [], function() { return ""; }, "登录后显示 Task 记录。");
   renderList(elements.templateList, [], function() { return ""; }, "登录后显示模板。");
+  renderList(elements.configList, [], function() { return ""; }, "登录后显示受管配置。");
   renderList(elements.approvalList, [], function() { return ""; }, "登录后显示待审批任务。");
   renderList(elements.auditList, [], function() { return ""; }, "登录后显示审计记录。");
   if (elements.metricsGrid) {

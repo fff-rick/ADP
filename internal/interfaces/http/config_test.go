@@ -3,6 +3,9 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"adp/internal/application/parser"
@@ -139,5 +142,37 @@ func TestManagedConfigRequiresAdmin(t *testing.T) {
 	status := mustJSONRequest(t, app.Client(), http.MethodPost, app.URL+"/api/v1/configs/prompts", token, map[string]any{"yaml_content": "code: task_parser\ncontent: test\n"}, nil)
 	if status != http.StatusForbidden {
 		t.Fatalf("operator config save status = %d, want %d", status, http.StatusForbidden)
+	}
+}
+
+func TestManagedConfigBootstrapAndEnforceSync(t *testing.T) {
+	dir := t.TempDir()
+	promptDir := filepath.Join(dir, "prompts")
+	if err := os.Mkdir(promptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(promptDir, "task_parser.yaml")
+	if err := os.WriteFile(path, []byte("code: task_parser\nname: parser\ncontent: source-v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(Config{Addr: ":0", AdminUsername: "admin", AdminPassword: "admin123", AuthSecret: "secret", WorkerSharedToken: "worker-secret", ManagedConfigDir: dir}, nil, nil)
+	cfg, err := server.repo.GetManagedConfig("prompts", "task_parser")
+	if err != nil || cfg.YAMLContent == "" {
+		t.Fatalf("bootstrap config = %+v, err=%v", cfg, err)
+	}
+	if err := os.WriteFile(path, []byte("code: task_parser\nname: parser\ncontent: source-v2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := server.syncManagedConfigs(dir, false)
+	if err != nil || len(report.Drifted) != 1 {
+		t.Fatalf("missing-mode report=%+v err=%v", report, err)
+	}
+	report, err = server.syncManagedConfigs(dir, true)
+	if err != nil || report.Updated != 1 {
+		t.Fatalf("enforce report=%+v err=%v", report, err)
+	}
+	cfg, _ = server.repo.GetManagedConfig("prompts", "task_parser")
+	if cfg.YAMLContent == "" || !strings.Contains(cfg.YAMLContent, "source-v2") {
+		t.Fatalf("enforced config = %+v", cfg)
 	}
 }
