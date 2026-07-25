@@ -12,6 +12,7 @@ steps:
     template_code: check_port
     parameters:
       ServiceProfile: nginx_prod
+      ServiceType: nginx
     timeout_seconds: 15
   - step_no: 2
     name: HTTP health check
@@ -19,6 +20,7 @@ steps:
     template_code: http_health_check
     parameters:
       ServiceProfile: adp_http
+      ServiceType: http
       Timeout: "10"
     timeout_seconds: 20
   - step_no: 3
@@ -27,5 +29,6 @@ steps:
     template_code: read_log_tail
     parameters:
       ServiceProfile: nginx_prod
+      ServiceType: nginx
       Lines: "50"
     timeout_seconds: 15

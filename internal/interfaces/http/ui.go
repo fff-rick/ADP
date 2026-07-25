@@ -42,6 +42,8 @@ func uiPageName(requestPath string) (string, error) {
 		return "jobs.html", nil
 	case "/tasks":
 		return "tasks.html", nil
+	case "/configs":
+		return "configs.html", nil
 	default:
 		return "", errors.New("page not found")
 	}

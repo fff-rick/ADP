@@ -49,26 +49,36 @@ func (s *Server) generateYAMLFromInput(_ *http.Request, input string) (string, *
 	var aiErr error
 	// Try LLM if configured.
 	if s.config.LLMBaseURL != "" {
-		prompt := s.injectAIContextIntoPrompt(s.promptOrDefault("yaml", yamlSystemPrompt))
-		yamlStr, err := callLLMForYAML(s.config.LLMBaseURL, s.config.LLMAPIKey, s.config.LLMModel, prompt, input)
-		if err != nil {
-			aiErr = err
+		prompt := s.injectAIContextIntoPrompt(s.promptOrDefault("yaml", ""))
+		if strings.TrimSpace(prompt) == "" {
+			aiErr = errors.New("YAML generator prompt is not configured")
 		} else {
-			yamlStr = stripMarkdownFence(yamlStr)
-			spec := &YAMLJobSpec{}
-			if err := yaml.Unmarshal([]byte(yamlStr), spec); err != nil {
-				aiErr = fmt.Errorf("LLM returned invalid YAML: %w", err)
-			} else if len(spec.Tasks) == 0 {
-				aiErr = errors.New("LLM returned YAML without tasks")
-			} else if err := s.validateAndFixYAML(spec); err != nil {
-				aiErr = fmt.Errorf("LLM YAML validation failed: %w", err)
+			yamlStr, err := callLLMForYAML(s.config.LLMBaseURL, s.config.LLMAPIKey, s.config.LLMModel, prompt, input)
+			if err != nil {
+				aiErr = err
 			} else {
-				return yamlStr, spec, true, nil
+				yamlStr = stripMarkdownFence(yamlStr)
+				spec := &YAMLJobSpec{}
+				if err := yaml.Unmarshal([]byte(yamlStr), spec); err != nil {
+					aiErr = fmt.Errorf("LLM returned invalid YAML: %w", err)
+				} else if len(spec.Tasks) == 0 {
+					aiErr = errors.New("LLM returned YAML without tasks")
+				} else if err := s.validateAndFixYAML(spec); err != nil {
+					aiErr = fmt.Errorf("LLM YAML validation failed: %w", err)
+				} else {
+					return yamlStr, spec, true, nil
+				}
 			}
 		}
 	}
 
-	yamlStr, spec := ruleBasedYAML(input)
+	yamlStr, spec, ruleErr := s.ruleBasedYAML(input)
+	if ruleErr != nil {
+		if aiErr != nil {
+			return "", nil, false, fmt.Errorf("%v; YAML rule fallback failed: %w", aiErr, ruleErr)
+		}
+		return "", nil, false, ruleErr
+	}
 	s.validateAndFixYAML(spec) //nolint:errcheck
 	return yamlStr, spec, false, aiErr
 }
@@ -147,93 +157,43 @@ func stripMarkdownFence(value string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-const yamlSystemPrompt = `你是 ADP 运维平台的 YAML 任务生成器。将用户的中文/英文输入转为 ADP YAML。
+// YAMLGenerationRule is the API-managed fallback mapping for YAML generation.
+type YAMLGenerationRule struct {
+	Keywords   []string   `yaml:"keywords"`
+	Name       string     `yaml:"name"`
+	Tasks      []YAMLTask `yaml:"tasks"`
+	WorkerType string     `yaml:"worker_type"`
+	Workers    []string   `yaml:"workers"`
+}
 
-## 可用模块（只能从以下选择，禁止编造）
-- mysql_backup: MySQL 备份 (params: Database*, ServiceProfile*)
-- http_health_check: HTTP 健康检查 (params: ServiceProfile*)
-- check_process: 检查进程 (params: ServiceProfile*)
-- check_port: 检查端口 (params: ServiceProfile*)
-- read_log_tail: 读取日志 (params: ServiceProfile*, Lines)
-- redis_ping: Redis PING (params: ServiceProfile*)
-- redis_info: Redis INFO (params: ServiceProfile*, Section)
-- redis_slowlog_get: Redis 慢查询 (params: ServiceProfile*, Count)
-- redis_client_list: Redis 客户端 (params: ServiceProfile*)
-
-## 输出格式（纯 YAML，禁止 markdown 代码块）
-name: <任务名>
-tasks:
-  - name: <步骤描述>
-    template: <模块code>
-    parameters:
-      key: value
-worker_type: shell
-workers:
-  - all
-
-## 规则
-1. 只用上面列出的模块 code
-2. 参数值从用户输入提取，必填参数给合理默认值
-3. 输出合法 YAML，不要额外文字`
-
-func ruleBasedYAML(input string) (string, *YAMLJobSpec) {
-	lower := strings.ToLower(input)
-	spec := &YAMLJobSpec{WorkerType: "shell", Workers: []string{"all"}}
-
-	switch {
-	case strings.Contains(lower, "mysql") || strings.Contains(lower, "数据库"):
-		if strings.Contains(lower, "备份") || strings.Contains(lower, "backup") {
-			spec.Name = "MySQL 数据库备份"
-			spec.Tasks = []YAMLTask{{
-				Name: "备份 MySQL", Template: "mysql_backup",
-				Parameters: map[string]string{"Database": "mydb", "ServiceProfile": "mysql_prod"},
-			}}
+func (s *Server) SetYAMLRules(rules []YAMLGenerationRule) error {
+	for i, rule := range rules {
+		if len(rule.Keywords) == 0 || strings.TrimSpace(rule.Name) == "" || len(rule.Tasks) == 0 {
+			return fmt.Errorf("YAML rule %d requires keywords, name and tasks", i+1)
 		}
-	case strings.Contains(lower, "nginx"):
-		spec.Name = "Nginx 诊断"
-		spec.Tasks = []YAMLTask{
-			{Name: "检查进程", Template: "check_process", Parameters: map[string]string{"ServiceProfile": "nginx_prod"}},
-			{Name: "检查端口", Template: "check_port", Parameters: map[string]string{"ServiceProfile": "nginx_prod"}},
-			{Name: "健康检查", Template: "http_health_check", Parameters: map[string]string{"ServiceProfile": "adp_http"}},
-		}
-	case strings.Contains(lower, "redis"):
-		spec.Name = "Redis 诊断"
-		spec.Tasks = []YAMLTask{
-			{Name: "PING", Template: "redis_ping", Parameters: map[string]string{"ServiceProfile": "redis_prod"}},
-			{Name: "内存信息", Template: "redis_info", Parameters: map[string]string{"ServiceProfile": "redis_prod"}},
-			{Name: "慢查询", Template: "redis_slowlog_get", Parameters: map[string]string{"ServiceProfile": "redis_prod", "Count": "10"}},
-		}
-	case strings.Contains(lower, "端口") || strings.Contains(lower, "port"):
-		spec.Name = "端口检查"
-		spec.Tasks = []YAMLTask{{Name: "检查端口", Template: "check_port", Parameters: map[string]string{"ServiceProfile": "nginx_prod"}}}
-	case strings.Contains(lower, "进程") || strings.Contains(lower, "process"):
-		spec.Tasks = []YAMLTask{{Name: "检查进程", Template: "check_process", Parameters: map[string]string{"ServiceProfile": "nginx_prod"}}}
-	default:
-		spec.Name = input
-		spec.Tasks = []YAMLTask{{Name: "健康检查", Template: "http_health_check", Parameters: map[string]string{"ServiceProfile": "adp_http"}}}
 	}
+	s.yamlRules = rules
+	return nil
+}
 
-	// Build YAML string.
-	var sb strings.Builder
-	sb.WriteString("name: " + spec.Name + "\n")
-	sb.WriteString("tasks:\n")
-	for _, t := range spec.Tasks {
-		sb.WriteString("  - name: " + t.Name + "\n")
-		sb.WriteString("    template: " + t.Template + "\n")
-		if len(t.Parameters) > 0 {
-			sb.WriteString("    parameters:\n")
-			for k, v := range t.Parameters {
-				sb.WriteString("      " + k + ": " + v + "\n")
+func (s *Server) ruleBasedYAML(input string) (string, *YAMLJobSpec, error) {
+	lower := strings.ToLower(input)
+	for _, rule := range s.yamlRules {
+		for _, keyword := range rule.Keywords {
+			if strings.Contains(lower, strings.ToLower(keyword)) {
+				spec := &YAMLJobSpec{Name: rule.Name, Tasks: rule.Tasks, WorkerType: rule.WorkerType, Workers: rule.Workers}
+				if spec.WorkerType == "" {
+					spec.WorkerType = "shell"
+				}
+				if len(spec.Workers) == 0 {
+					spec.Workers = []string{"all"}
+				}
+				data, err := yaml.Marshal(spec)
+				return string(data), spec, err
 			}
 		}
 	}
-	sb.WriteString("worker_type: " + spec.WorkerType + "\n")
-	sb.WriteString("workers:\n")
-	for _, w := range spec.Workers {
-		sb.WriteString("  - " + w + "\n")
-	}
-
-	return sb.String(), spec
+	return "", nil, errors.New("no managed YAML generation rule matches the input")
 }
 
 // handleSaveYAML saves a YAML definition to the database.

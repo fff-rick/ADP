@@ -10,7 +10,7 @@ import (
 )
 
 func TestAnalyze_NginxUnreachable_ProcessDown(t *testing.T) {
-	a := New(nil)
+	a := newConfiguredAnalyzer(t, nil)
 
 	plan := model.DiagnosisPlan{
 		ID:          "plan-000001",
@@ -60,7 +60,7 @@ func TestAnalyze_NginxUnreachable_ProcessDown(t *testing.T) {
 }
 
 func TestAnalyze_RedisSlow(t *testing.T) {
-	a := New(nil)
+	a := newConfiguredAnalyzer(t, nil)
 
 	plan := model.DiagnosisPlan{
 		ID:          "plan-000002",
@@ -98,7 +98,7 @@ func TestAnalyze_RedisSlow(t *testing.T) {
 }
 
 func TestAnalyze_WithLLMUsesParsedReport(t *testing.T) {
-	a := New(staticLLMClient{
+	a := newConfiguredAnalyzer(t, staticLLMClient{
 		response: `{
 			"fault_type": "AI 判断的 Redis 内存压力",
 			"possible_causes": ["Redis maxmemory 设置过低"],
@@ -123,7 +123,7 @@ func TestAnalyze_WithLLMUsesParsedReport(t *testing.T) {
 }
 
 func TestAnalyze_WithInvalidLLMFallsBackToRules(t *testing.T) {
-	a := New(staticLLMClient{response: "not json"})
+	a := newConfiguredAnalyzer(t, staticLLMClient{response: "not json"})
 
 	report, err := a.Analyze(context.Background(), sampleRedisPlan())
 	if err != nil {
@@ -135,7 +135,7 @@ func TestAnalyze_WithInvalidLLMFallsBackToRules(t *testing.T) {
 }
 
 func TestAnalyze_WithLLMErrorFallsBackToRules(t *testing.T) {
-	a := New(staticLLMClient{err: errors.New("llm unavailable")})
+	a := newConfiguredAnalyzer(t, staticLLMClient{err: errors.New("llm unavailable")})
 
 	report, err := a.Analyze(context.Background(), sampleRedisPlan())
 	if err != nil {
@@ -182,4 +182,16 @@ func stringsRepeat(s string, n int) string {
 		result += s
 	}
 	return result
+}
+
+func newConfiguredAnalyzer(t *testing.T, client llm.Client) *Analyzer {
+	t.Helper()
+	a := New(client)
+	if err := a.SetRules([]AnalysisRule{
+		{TriggerType: "nginx_unreachable", FaultType: "Nginx 服务异常", PossibleCauses: []string{"服务或网络异常"}, Suggestions: []string{"检查服务状态"}, Confidence: 0.5},
+		{TriggerType: "redis_slow", FaultType: "Redis 响应慢", PossibleCauses: []string{"性能异常"}, Suggestions: []string{"检查慢日志"}, Confidence: 0.5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return a
 }

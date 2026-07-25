@@ -9,7 +9,7 @@ import (
 )
 
 func TestGeneratePlan_NginxUnreachable(t *testing.T) {
-	p := New(nil, template.NewEngine(), NewPlanStore())
+	p := newConfiguredPlanner()
 
 	tests := []string{
 		"nginx 无法访问",
@@ -45,7 +45,7 @@ func TestGeneratePlan_NginxUnreachable(t *testing.T) {
 }
 
 func TestGeneratePlan_RedisSlow(t *testing.T) {
-	p := New(nil, template.NewEngine(), NewPlanStore())
+	p := newConfiguredPlanner()
 
 	tests := []string{
 		"Redis 响应速度过慢",
@@ -122,4 +122,15 @@ func TestPlanStore(t *testing.T) {
 	if ok {
 		t.Fatal("expected false for nonexistent plan")
 	}
+}
+
+func newConfiguredPlanner() *Planner {
+	p := New(nil, template.NewEngine(), NewPlanStore())
+	p.RegisterPlanDefinition("nginx_unreachable", PlanDefinition{Title: "Nginx", Keywords: []string{"nginx", "网站", "http", "unreachable"}, Steps: []model.DiagnosisStep{
+		{TemplateCode: "check_process"}, {TemplateCode: "check_port"}, {TemplateCode: "read_log_tail"}, {TemplateCode: "http_health_check"},
+	}})
+	p.RegisterPlanDefinition("redis_slow", PlanDefinition{Title: "Redis", Keywords: []string{"redis", "缓存", "慢", "性能"}, Steps: []model.DiagnosisStep{
+		{TemplateCode: "redis_ping"}, {TemplateCode: "redis_info"}, {TemplateCode: "redis_slowlog_get"}, {TemplateCode: "redis_client_list"},
+	}})
+	return p
 }

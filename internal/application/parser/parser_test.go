@@ -2,6 +2,8 @@ package parser
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"adp/internal/domain/model"
@@ -11,7 +13,7 @@ import (
 )
 
 func TestParseWithRules_MySQLBackup(t *testing.T) {
-	p := NewParser(nil, template.NewEngine(), policy.NewEngine())
+	p := newRuleParser(t, nil)
 
 	tests := []struct {
 		input          string
@@ -47,7 +49,7 @@ func TestParseWithRules_MySQLBackup(t *testing.T) {
 }
 
 func TestParseWithRules_HTTPHealthCheck(t *testing.T) {
-	p := NewParser(nil, template.NewEngine(), policy.NewEngine())
+	p := newRuleParser(t, nil)
 
 	tests := []string{
 		"检查 HTTP 服务健康状态",
@@ -75,7 +77,7 @@ func TestParseWithRules_HTTPHealthCheck(t *testing.T) {
 }
 
 func TestParseWithRules_NginxMultiStepDiagnosis(t *testing.T) {
-	p := NewParser(nil, template.NewEngine(), policy.NewEngine())
+	p := newRuleParser(t, nil)
 
 	intent, err := p.Parse(context.Background(), "帮我检查 nginx 是否正常运行，并查看错误日志")
 	if err != nil {
@@ -106,8 +108,41 @@ func TestParseWithLLMJSONIntent(t *testing.T) {
 	}
 }
 
+func TestParseGitHubConnectivityWithRules(t *testing.T) {
+	p := newRuleParser(t, nil)
+	intent, err := p.Parse(context.Background(), "测试主机与github的连通性")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if intent.Intent != "health_check" || intent.Parameters["URL"] != "https://github.com" {
+		t.Fatalf("unexpected intent: %+v", intent)
+	}
+	if intent.ParseSource != "rule" {
+		t.Fatalf("parse_source = %q, want rule", intent.ParseSource)
+	}
+}
+
+func TestParseReportsLLMFailureWhenFallbackCannotParse(t *testing.T) {
+	p := newRuleParser(t, staticLLMClient{err: errors.New("connection refused")})
+	_, err := p.Parse(context.Background(), "unrecognizable task")
+	if err == nil || !strings.Contains(err.Error(), "LLM parsing failed (llm call failed: connection refused)") {
+		t.Fatalf("expected actionable LLM failure, got %v", err)
+	}
+}
+
+func TestParseMarksRuleFallbackAfterLLMFailure(t *testing.T) {
+	p := newRuleParser(t, staticLLMClient{err: errors.New("connection refused")})
+	intent, err := p.Parse(context.Background(), "测试主机与github的连通性")
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if intent.ParseSource != "rule_fallback" || intent.ParseWarning == "" {
+		t.Fatalf("fallback diagnostic missing: %+v", intent)
+	}
+}
+
 func TestParseWithRules_UnrecognizedInput(t *testing.T) {
-	p := NewParser(nil, template.NewEngine(), policy.NewEngine())
+	p := newRuleParser(t, nil)
 
 	_, err := p.Parse(context.Background(), "random gibberish")
 	if err == nil {
@@ -148,8 +183,24 @@ func TestScheduleExtraction(t *testing.T) {
 
 type staticLLMClient struct {
 	response string
+	err      error
+}
+
+func newRuleParser(t *testing.T, client llm.Client) *Parser {
+	t.Helper()
+	p := NewParser(client, template.NewEngine(), policy.NewEngine())
+	err := p.SetRules([]IntentRule{
+		{Pattern: `(mysql|数据库).*(备份|backup)|(备份|backup).*(mysql|数据库)`, Intent: "create_scheduled_backup", TargetType: "mysql", RiskLevel: model.RiskLevelMedium, MatchedTemplate: "mysql_backup"},
+		{Pattern: `(github).*(连通|连接)|(连通|连接).*(github)`, Intent: "health_check", TargetType: "http_service", Parameters: map[string]string{"URL": "https://github.com", "Timeout": "10"}, MatchedTemplate: "http_health_check"},
+		{Pattern: `健康检查|health.?check|(检查|检测).*(http|网站|服务)`, Intent: "health_check", TargetType: "http_service", MatchedTemplate: "http_health_check"},
+		{Pattern: `nginx.*(日志|错误|运行)|检查.*nginx`, Intent: "diagnose", TargetType: "nginx"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func (c staticLLMClient) Chat(_ context.Context, _ []llm.Message) (string, error) {
-	return c.response, nil
+	return c.response, c.err
 }

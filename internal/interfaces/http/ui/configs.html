@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADP 受管配置</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="configs">
+  <div class="ambient-glow"></div>
+  <div class="shell" style="position:relative;z-index:1;">
+    <header class="topbar">
+      <div class="topbar-brand">配置<em>Managed Configurations</em></div>
+      <div class="topbar-right">
+        <span class="server-clock" id="clock">--:--:--</span>
+        <a href="/login" class="btn btn-xs btn-primary" id="login-nav-btn" style="display:none;">登录</a>
+        <span class="session-badge" id="session-state">未登录</span>
+        <button id="logout-button" class="btn btn-xs btn-ghost" style="display:none;">退出</button>
+        <button class="theme-toggle" id="theme-toggle" type="button" title="切换主题">◐</button>
+      </div>
+    </header>
+    <nav class="nav" style="margin-bottom:28px;">
+      <a class="nav-link" href="/">首页</a><a class="nav-link" href="/users">用户</a><a class="nav-link" href="/workers">Workers</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/tasks">Tasks</a><a class="nav-link is-active" href="/configs">配置</a>
+    </nav>
+    <main>
+      <div class="panel-shell scroll-reveal" style="margin-bottom:28px;"><div class="panel-core">
+        <div class="panel-heading"><span class="panel-index">导入</span><span class="panel-title">上传或粘贴 YAML</span></div>
+        <form id="config-form" class="form-stack">
+          <div class="field-group"><label class="field-label" for="config-kind">配置类型</label>
+            <select class="field-input" id="config-kind"><option value="templates">模板 templates</option><option value="policies">策略 policies</option><option value="prompts">提示词 prompts</option><option value="diagnosis_plans">诊断计划 diagnosis_plans</option><option value="parser_rules">解析规则 parser_rules</option><option value="yaml_rules">YAML 生成规则 yaml_rules</option><option value="analysis_rules">分析规则 analysis_rules</option></select>
+          </div>
+          <div class="field-group"><label class="field-label" for="config-file">本地 YAML 文件</label><input class="field-input" id="config-file" type="file" accept=".yaml,.yml,text/yaml,application/x-yaml"></div>
+          <div class="field-group"><label class="field-label" for="config-yaml">YAML 内容</label><textarea class="field-textarea mono" id="config-yaml" rows="16" placeholder="选择本地 .yaml/.yml 文件，或直接粘贴内容。"></textarea></div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;"><button class="btn btn-primary" type="submit">导入并生效</button><button class="btn btn-secondary" id="config-refresh" type="button">刷新列表</button></div>
+        </form>
+      </div></div>
+      <div class="panel-shell scroll-reveal"><div class="panel-core">
+        <div class="panel-heading"><span class="panel-index">当前</span><span class="panel-title">已导入配置</span></div>
+        <div id="config-list"></div>
+      </div></div>
+    </main>
+  </div>
+  <div id="toast" class="toast" hidden></div><script src="/static/app.js" defer></script>
+</body></html>

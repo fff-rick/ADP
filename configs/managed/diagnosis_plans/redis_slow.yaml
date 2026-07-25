@@ -1,0 +1,8 @@
+trigger_type: redis_slow
+title: Redis 响应慢诊断
+keywords: [redis, 缓存服务变慢, 响应慢, 慢查询, 性能问题]
+steps:
+  - {step_no: 1, name: Redis 存活检查, description: 确认 Redis 是否响应 PING。, template_code: redis_ping, parameters: {ServiceProfile: redis_prod, ServiceType: redis}, timeout_seconds: 10}
+  - {step_no: 2, name: Redis 内存信息, description: 获取 Redis 内存使用情况。, template_code: redis_info, parameters: {ServiceProfile: redis_prod, ServiceType: redis, Section: memory}, timeout_seconds: 15}
+  - {step_no: 3, name: Redis 慢日志, description: 获取最近慢查询记录。, template_code: redis_slowlog_get, parameters: {ServiceProfile: redis_prod, ServiceType: redis, Count: "10"}, timeout_seconds: 15}
+  - {step_no: 4, name: Redis 客户端连接, description: 检查当前连接数量。, template_code: redis_client_list, parameters: {ServiceProfile: redis_prod, ServiceType: redis}, timeout_seconds: 10}

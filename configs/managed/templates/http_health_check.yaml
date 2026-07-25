@@ -1,0 +1,11 @@
+code: http_health_check
+name: HTTP 健康检查
+description: 检查 URL 是否可访问。
+tool_type: shell
+command: curl -s -o /dev/null -w '%{http_code}' --max-time {{.Timeout}} {{.URL}}
+risk_level: low
+parameters:
+  - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+  - {name: ServiceType, description: 服务类型, required: true, default: http}
+  - {name: URL, description: 检查地址, required: true}
+  - {name: Timeout, description: 超时秒数, required: false, default: "10"}

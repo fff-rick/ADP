@@ -1,0 +1,6 @@
+code: redis_ping
+name: Redis PING
+tool_type: shell
+command: redis-cli -h {{.Host}} -p {{.Port}} PING
+risk_level: low
+parameters: [{name: ServiceProfile, required: true}, {name: ServiceType, required: true, default: redis}, {name: Host, required: true}, {name: Port, required: true}]

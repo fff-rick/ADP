@@ -16,9 +16,9 @@ func (c *Client) resolveServiceProfile(templateCode string, source map[string]st
 	if c.serviceCatalog == nil {
 		return nil, nil, fmt.Errorf("services config is not loaded")
 	}
-	serviceType, ok := serviceTypeForTemplate(templateCode)
-	if !ok {
-		return nil, nil, fmt.Errorf("template %q does not support ServiceProfile", templateCode)
+	serviceType := strings.ToLower(strings.TrimSpace(params["ServiceType"]))
+	if serviceType == "" {
+		return nil, nil, fmt.Errorf("template %q requires ServiceType when ServiceProfile is set", templateCode)
 	}
 	profile, err := c.serviceCatalog.Resolve(name, serviceType)
 	if err != nil {
@@ -46,19 +46,4 @@ func (c *Client) resolveServiceProfile(templateCode string, source map[string]st
 		params["LogFile"] = profile.LogFile
 	}
 	return params, &profile, nil
-}
-
-func serviceTypeForTemplate(templateCode string) (string, bool) {
-	switch templateCode {
-	case "mysql_backup":
-		return "mysql", true
-	case "redis_ping", "redis_info", "redis_slowlog_get", "redis_client_list":
-		return "redis", true
-	case "check_process", "check_port", "read_log_tail":
-		return "nginx", true
-	case "http_health_check":
-		return "http", true
-	default:
-		return "", false
-	}
 }

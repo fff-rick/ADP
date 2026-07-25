@@ -11,12 +11,15 @@ var serviceProfilePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 // ValidateServiceProfile ensures the control plane can reference only a
 // named Worker-local profile, never a path or connection string.
 func ValidateServiceProfile(templateCode string, params map[string]string) error {
-	switch templateCode {
-	case "mysql_backup", "redis_ping", "redis_info", "redis_slowlog_get", "redis_client_list", "check_process", "check_port", "read_log_tail", "http_health_check":
-		name := strings.TrimSpace(params["ServiceProfile"])
-		if !serviceProfilePattern.MatchString(name) {
-			return fmt.Errorf("template %q requires a valid ServiceProfile", templateCode)
-		}
+	name := strings.TrimSpace(params["ServiceProfile"])
+	if name == "" {
+		return nil
+	}
+	if !serviceProfilePattern.MatchString(name) {
+		return fmt.Errorf("template %q has invalid ServiceProfile", templateCode)
+	}
+	if strings.TrimSpace(params["ServiceType"]) == "" {
+		return fmt.Errorf("template %q requires ServiceType when ServiceProfile is set", templateCode)
 	}
 	return nil
 }

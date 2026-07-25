@@ -89,6 +89,12 @@ type TaskIntent struct {
 	RiskLevel       RiskLevel         `json:"risk_level"`
 	Parameters      map[string]string `json:"parameters,omitempty"`
 	MatchedTemplate string            `json:"matched_template,omitempty"`
+	// ParseSource records how this result was produced so callers can tell a
+	// successful LLM parse from a rule-based fallback.
+	ParseSource string `json:"parse_source,omitempty"`
+	// ParseWarning is non-empty only when the LLM was unavailable or returned an
+	// invalid response and the rule parser recovered the request.
+	ParseWarning string `json:"parse_warning,omitempty"`
 }
 
 // CommandTemplate defines a reusable, parameterized command template.

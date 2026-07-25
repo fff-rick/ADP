@@ -16,67 +16,20 @@ type Engine struct {
 	approvalRiskLevels map[model.RiskLevel]bool
 }
 
-// NewEngine creates a policy engine with a default whitelist.
+// NewEngine creates a deny-by-default policy engine. Authorization is supplied
+// exclusively by the active managed policy configuration.
 func NewEngine() *Engine {
-	e := &Engine{
-		allowedTools: map[string]bool{
-			"mysqldump": true,
-			"curl":      true,
-			"ping":      true,
-			"redis-cli": true,
-			"mysql":     true,
-			"echo":      true,
-			"cat":       true,
-			"grep":      true,
-			"df":        true,
-			"free":      true,
-			"uptime":    true,
-			"netstat":   true,
-			"ss":        true,
-			"head":      true,
-			"tail":      true,
-			"wc":        true,
-			"sort":      true,
-			"uniq":      true,
-			"ps":        true,
-			"awk":       true,
-		},
-		allowedTemplates: map[string]bool{
-			"mysql_backup":      true,
-			"http_health_check": true,
-			"check_process":     true,
-			"check_port":        true,
-			"read_log_tail":     true,
-			"redis_ping":        true,
-			"redis_info":        true,
-			"redis_slowlog_get": true,
-			"redis_client_list": true,
-		},
-		highRiskKeywords: []string{"delete", "drop", "restart", "reboot", "shutdown", "kill", "rm ", "mkfs", "dd "},
-		approvalRiskLevels: map[model.RiskLevel]bool{
-			model.RiskLevelMedium: true,
-			model.RiskLevelHigh:   true,
-		},
-	}
-	return e
+	return &Engine{allowedTools: map[string]bool{}, allowedTemplates: map[string]bool{}, approvalRiskLevels: map[model.RiskLevel]bool{}}
 }
 
 // Configure replaces runtime policy settings from managed configuration.
 func (e *Engine) Configure(allowedTools, allowedTemplates, highRiskKeywords []string, approvalRiskLevels []model.RiskLevel) {
-	if len(allowedTools) > 0 {
-		e.allowedTools = stringSet(allowedTools)
-	}
-	if len(allowedTemplates) > 0 {
-		e.allowedTemplates = stringSet(allowedTemplates)
-	}
-	if len(highRiskKeywords) > 0 {
-		e.highRiskKeywords = highRiskKeywords
-	}
-	if len(approvalRiskLevels) > 0 {
-		e.approvalRiskLevels = make(map[model.RiskLevel]bool, len(approvalRiskLevels))
-		for _, level := range approvalRiskLevels {
-			e.approvalRiskLevels[level] = true
-		}
+	e.allowedTools = stringSet(allowedTools)
+	e.allowedTemplates = stringSet(allowedTemplates)
+	e.highRiskKeywords = highRiskKeywords
+	e.approvalRiskLevels = make(map[model.RiskLevel]bool, len(approvalRiskLevels))
+	for _, level := range approvalRiskLevels {
+		e.approvalRiskLevels[level] = true
 	}
 }
 

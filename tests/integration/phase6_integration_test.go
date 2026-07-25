@@ -26,6 +26,7 @@ func TestPhase6Acceptance(t *testing.T) {
 	defer app.Close()
 
 	token := loginForIntegration(t, app.URL)
+	installParserRules(t, app.URL, app.Client(), token)
 
 	t.Run("mysql backup approval flow", func(t *testing.T) {
 		runResp := struct {
@@ -37,6 +38,7 @@ func TestPhase6Acceptance(t *testing.T) {
 			"parameters": map[string]string{
 				"Database":       "demo",
 				"ServiceProfile": "mysql_prod",
+				"ServiceType":    "mysql",
 			},
 		}, &runResp)
 		if status != http.StatusAccepted {
@@ -141,6 +143,60 @@ func TestPhase6Acceptance(t *testing.T) {
 			t.Fatal("expected redis historical hints")
 		}
 	})
+}
+
+func installParserRules(t *testing.T, baseURL string, client *http.Client, token string) {
+	t.Helper()
+	status := doUserJSON(t, client, http.MethodPost, baseURL+"/api/v1/configs/parser_rules", token, map[string]any{"yaml_content": `id: task_parser
+rules:
+  - pattern: '(mysql|数据库).*(备份|backup)|(备份|backup).*(mysql|数据库)'
+    intent: create_scheduled_backup
+    target_type: mysql
+    risk_level: medium
+    matched_template: mysql_backup
+    parameters: {}
+`}, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("parser rules status = %d", status)
+	}
+	status = doUserJSON(t, client, http.MethodPost, baseURL+"/api/v1/configs/policies", token, map[string]any{"yaml_content": `id: default
+allowed_tools: [echo]
+allowed_templates: [mysql_backup, http_health_check, check_process, check_port, read_log_tail, redis_ping, redis_info, redis_slowlog_get, redis_client_list]
+high_risk_keywords: [delete, drop]
+approval_risk_levels: [medium, high]
+`}, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("policy status = %d", status)
+	}
+	for _, code := range []string{"mysql_backup", "http_health_check", "check_process", "check_port", "read_log_tail", "redis_ping", "redis_info", "redis_slowlog_get", "redis_client_list"} {
+		raw := "code: " + code + "\nname: " + code + "\ntool_type: shell\ncommand: echo ok\nrisk_level: low\nparameters: []\n"
+		status = doUserJSON(t, client, http.MethodPost, baseURL+"/api/v1/configs/templates", token, map[string]any{"yaml_content": raw}, nil)
+		if status != http.StatusCreated {
+			t.Fatalf("template %s status = %d", code, status)
+		}
+	}
+	for _, raw := range []string{`trigger_type: nginx_unreachable
+title: Nginx
+keywords: [nginx, 网站, http, unreachable]
+steps:
+  - {template_code: check_process, parameters: {ServiceProfile: nginx_prod, ServiceType: nginx}}
+  - {template_code: check_port, parameters: {ServiceProfile: nginx_prod, ServiceType: nginx}}
+  - {template_code: read_log_tail, parameters: {ServiceProfile: nginx_prod, ServiceType: nginx}}
+  - {template_code: http_health_check, parameters: {ServiceProfile: adp_http, ServiceType: http}}
+`, `trigger_type: redis_slow
+title: Redis
+keywords: [redis, 缓存, 慢, 性能]
+steps:
+  - {template_code: redis_ping, parameters: {ServiceProfile: redis_prod, ServiceType: redis}}
+  - {template_code: redis_info, parameters: {ServiceProfile: redis_prod, ServiceType: redis}}
+  - {template_code: redis_slowlog_get, parameters: {ServiceProfile: redis_prod, ServiceType: redis}}
+  - {template_code: redis_client_list, parameters: {ServiceProfile: redis_prod, ServiceType: redis}}
+`} {
+		status = doUserJSON(t, client, http.MethodPost, baseURL+"/api/v1/configs/diagnosis_plans", token, map[string]any{"yaml_content": raw}, nil)
+		if status != http.StatusCreated {
+			t.Fatalf("diagnosis plan status = %d", status)
+		}
+	}
 }
 
 type workerCompletion struct {
