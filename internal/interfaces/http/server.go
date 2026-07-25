@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"adp/internal/application/parser"
 	"adp/internal/application/planner"
 	"adp/internal/config"
+	"adp/internal/domain/model"
 	"adp/internal/domain/policy"
 	"adp/internal/domain/template"
 	"adp/internal/infrastructure/auth"
@@ -34,6 +37,7 @@ type Config struct {
 	LLMAPIKey         string
 	LLMModel          string
 	AIContextPath     string
+	ManagedConfigDir  string
 }
 
 // HasLLM returns true if an LLM is configured.
@@ -50,6 +54,7 @@ type Server struct {
 	taskParser    *parser.Parser
 	planner       *planner.Planner
 	analyzer      *analyzer.Analyzer
+	llmClient     llm.Client
 	aiContext     *config.AIContext
 	systemPrompts map[string]string
 	yamlRules     []YAMLGenerationRule
@@ -110,9 +115,13 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 		taskParser:    taskParser,
 		planner:       dPlanner,
 		analyzer:      dAnalyzer,
+		llmClient:     llmClient,
 		systemPrompts: make(map[string]string),
 	}
 
+	if err := server.bootstrapManagedConfigs(cfg.ManagedConfigDir); err != nil {
+		log.Printf("WARNING: failed to bootstrap managed configs: %v", err)
+	}
 	if err := server.reloadManagedConfigs(); err != nil {
 		log.Printf("WARNING: failed to load managed configs: %v", err)
 	}
@@ -181,10 +190,10 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	mux.HandleFunc("POST /api/v1/yamls/", server.withUserAuth(server.handleYAMLActions))
 	mux.HandleFunc("DELETE /api/v1/yamls/", server.withUserAuth(server.handleYAMLActions))
 	// Runtime managed configs: templates, policies, prompts, diagnosis plans.
-	mux.HandleFunc("GET /api/v1/configs/", server.withUserAuth(server.handleManagedConfigActions))
-	mux.HandleFunc("POST /api/v1/configs/", server.withUserAuth(server.handleManagedConfigActions))
-	mux.HandleFunc("PUT /api/v1/configs/", server.withUserAuth(server.handleManagedConfigActions))
-	mux.HandleFunc("DELETE /api/v1/configs/", server.withUserAuth(server.handleManagedConfigActions))
+	mux.HandleFunc("GET /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))
+	mux.HandleFunc("POST /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))
+	mux.HandleFunc("PUT /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))
+	mux.HandleFunc("DELETE /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))
 	// Worker logs (worker auth)
 	mux.HandleFunc("POST /api/v1/job-logs", server.withWorkerAuth(server.handleAddWorkerLog))
 
@@ -195,6 +204,39 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	}
 
 	return server
+}
+
+// bootstrapManagedConfigs imports missing source-controlled YAML files without
+// overwriting runtime edits. Use the config API for deliberate updates.
+func (s *Server) bootstrapManagedConfigs(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	return filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || (filepath.Ext(path) != ".yaml" && filepath.Ext(path) != ".yml") {
+			return nil
+		}
+		kind := filepath.Base(filepath.Dir(path))
+		if !isSupportedConfigKind(kind) {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		id, name, err := managedConfigIdentity(kind, string(content))
+		if err != nil {
+			return fmt.Errorf("validate %s: %w", path, err)
+		}
+		if _, err := s.repo.GetManagedConfig(kind, id); err == nil {
+			return nil
+		}
+		_, err = s.repo.SaveManagedConfig(model.ManagedConfig{ID: id, Kind: kind, Name: name, YAMLContent: string(content), Active: true})
+		return err
+	})
 }
 
 func (s *Server) Start() error {

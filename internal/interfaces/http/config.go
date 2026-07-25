@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -179,6 +180,7 @@ func (s *Server) handleSaveManagedConfig(w http.ResponseWriter, r *http.Request,
 		active = *req.Active
 	}
 
+	previous, _ := s.repo.GetManagedConfig(kind, id)
 	cfg, err := s.repo.SaveManagedConfig(model.ManagedConfig{
 		ID:          id,
 		Kind:        kind,
@@ -197,10 +199,21 @@ func (s *Server) handleSaveManagedConfig(w http.ResponseWriter, r *http.Request,
 
 	user := currentUser(r)
 	s.recordAudit("user", user.Username, "managed_config.saved", "managed_config", kind+"/"+cfg.ID, map[string]any{
-		"kind":   kind,
-		"active": active,
+		"kind":            kind,
+		"active":          active,
+		"created":         previous.ID == "",
+		"previous_sha256": yamlSHA256(previous.YAMLContent),
+		"current_sha256":  yamlSHA256(cfg.YAMLContent),
 	})
 	writeJSON(w, http.StatusCreated, cfg)
+}
+
+func yamlSHA256(content string) string {
+	if content == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("%x", sum)
 }
 
 func managedConfigPath(path string) (string, string) {

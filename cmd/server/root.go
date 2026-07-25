@@ -61,6 +61,7 @@ func init() {
 	serveCmd.Flags().String("llm-api-key", "", "LLM API key (optional)")
 	serveCmd.Flags().String("llm-model", "gpt-4", "LLM model name")
 	serveCmd.Flags().String("ai-context", "", "Path to AI context YAML file")
+	serveCmd.Flags().String("managed-config-dir", "configs/managed", "Source-controlled managed YAML configuration directory")
 	serveCmd.Flags().String("config", "", "Path to YAML config file")
 
 	// Bind flags to viper.
@@ -76,6 +77,7 @@ func init() {
 	_ = viper.BindPFlag("llm.api_key", serveCmd.Flags().Lookup("llm-api-key"))
 	_ = viper.BindPFlag("llm.model", serveCmd.Flags().Lookup("llm-model"))
 	_ = viper.BindPFlag("ai_context", serveCmd.Flags().Lookup("ai-context"))
+	_ = viper.BindPFlag("managed_config_dir", serveCmd.Flags().Lookup("managed-config-dir"))
 
 	// Viper config: env vars with ADP_ prefix, config file support
 	viper.SetEnvPrefix("ADP")
@@ -197,6 +199,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLMAPIKey:         viper.GetString("llm.api_key"),
 		LLMModel:          viper.GetString("llm.model"),
 		AIContextPath:     viper.GetString("ai_context"),
+		ManagedConfigDir:  viper.GetString("managed_config_dir"),
 	}
 	if err := validateRuntimeConfig(cfg); err != nil {
 		return err
@@ -237,6 +240,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLMAPIKey:         cfg.LLMAPIKey,
 		LLMModel:          cfg.LLMModel,
 		AIContextPath:     cfg.AIContextPath,
+		ManagedConfigDir:  cfg.ManagedConfigDir,
 	}, repo, authService)
 
 	grpcListener, err := net.Listen("tcp", cfg.WorkerGRPCAddr)

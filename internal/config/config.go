@@ -15,6 +15,7 @@ type ServerConfig struct {
 	LLMAPIKey         string
 	LLMModel          string
 	AIContextPath     string
+	ManagedConfigDir  string
 }
 
 // WorkerConfig holds all configuration for the ADP worker.
