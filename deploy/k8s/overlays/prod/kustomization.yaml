@@ -11,7 +11,7 @@ resources:
 images:
   - name: ghcr.io/fff-rick/adp-server
     newName: ghcr.io/fff-rick/adp-server
-    newTag: fe77553e31fd
+    newTag: 4a66bc733b37
 
 patches:
   - path: server-config.patch.yaml
