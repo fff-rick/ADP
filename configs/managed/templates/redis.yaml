@@ -1,0 +1,27 @@
+id: redis
+name: Redis templates
+templates:
+  - code: redis_ping
+    name: Redis PING
+    tool_type: redis
+    command: redis-cli -h {{.Host}} -p {{.Port}} PING
+    risk_level: low
+    parameters: [{name: ServiceProfile, required: true}, {name: ServiceType, required: true, default: redis}, {name: Host, required: true}, {name: Port, required: true}]
+  - code: redis_info
+    name: Redis INFO
+    tool_type: redis
+    command: redis-cli -h {{.Host}} -p {{.Port}} INFO {{.Section}}
+    risk_level: low
+    parameters: [{name: ServiceProfile, required: true}, {name: ServiceType, required: true, default: redis}, {name: Host, required: true}, {name: Port, required: true}, {name: Section, required: false, default: memory}]
+  - code: redis_slowlog_get
+    name: Redis 慢日志
+    tool_type: redis
+    command: redis-cli -h {{.Host}} -p {{.Port}} SLOWLOG GET {{.Count}}
+    risk_level: low
+    parameters: [{name: ServiceProfile, required: true}, {name: ServiceType, required: true, default: redis}, {name: Host, required: true}, {name: Port, required: true}, {name: Count, required: false, default: "10"}]
+  - code: redis_client_list
+    name: Redis 客户端列表
+    tool_type: redis
+    command: redis-cli -h {{.Host}} -p {{.Port}} CLIENT LIST
+    risk_level: low
+    parameters: [{name: ServiceProfile, required: true}, {name: ServiceType, required: true, default: redis}, {name: Host, required: true}, {name: Port, required: true}]

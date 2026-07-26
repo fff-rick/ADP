@@ -1,6 +1,0 @@
-code: redis_client_list
-name: Redis 客户端列表
-tool_type: shell
-command: redis-cli -h {{.Host}} -p {{.Port}} CLIENT LIST
-risk_level: low
-parameters: [{name: ServiceProfile, required: true}, {name: ServiceType, required: true, default: redis}, {name: Host, required: true}, {name: Port, required: true}]

@@ -17,7 +17,7 @@ type RedisPing struct{}
 func (m *RedisPing) Code() string               { return "redis_ping" }
 func (m *RedisPing) Name() string               { return "Redis PING" }
 func (m *RedisPing) Description() string        { return "向 Redis 发送 PING 命令检查连通性" }
-func (m *RedisPing) ToolType() string           { return "shell" }
+func (m *RedisPing) ToolType() string           { return "redis" }
 func (m *RedisPing) RiskLevel() model.RiskLevel { return model.RiskLevelLow }
 func (m *RedisPing) RiskProfile() module.RiskProfile {
 	return module.RiskProfile{Level: model.RiskLevelLow, Reversible: true, ImpactScope: "single_host"}
@@ -48,7 +48,7 @@ type RedisInfo struct{}
 func (m *RedisInfo) Code() string               { return "redis_info" }
 func (m *RedisInfo) Name() string               { return "Redis INFO" }
 func (m *RedisInfo) Description() string        { return "获取 Redis INFO 信息（内存、连接等）" }
-func (m *RedisInfo) ToolType() string           { return "shell" }
+func (m *RedisInfo) ToolType() string           { return "redis" }
 func (m *RedisInfo) RiskLevel() model.RiskLevel { return model.RiskLevelLow }
 func (m *RedisInfo) RiskProfile() module.RiskProfile {
 	return module.RiskProfile{Level: model.RiskLevelLow, Reversible: true, ImpactScope: "single_host"}
@@ -78,7 +78,7 @@ type RedisSlowlogGet struct{}
 func (m *RedisSlowlogGet) Code() string               { return "redis_slowlog_get" }
 func (m *RedisSlowlogGet) Name() string               { return "Redis 慢查询" }
 func (m *RedisSlowlogGet) Description() string        { return "获取 Redis 慢查询日志" }
-func (m *RedisSlowlogGet) ToolType() string           { return "shell" }
+func (m *RedisSlowlogGet) ToolType() string           { return "redis" }
 func (m *RedisSlowlogGet) RiskLevel() model.RiskLevel { return model.RiskLevelLow }
 func (m *RedisSlowlogGet) RiskProfile() module.RiskProfile {
 	return module.RiskProfile{Level: model.RiskLevelLow, Reversible: true, ImpactScope: "single_host"}
@@ -113,7 +113,7 @@ type RedisClientList struct{}
 func (m *RedisClientList) Code() string               { return "redis_client_list" }
 func (m *RedisClientList) Name() string               { return "Redis 客户端列表" }
 func (m *RedisClientList) Description() string        { return "获取 Redis 客户端连接列表" }
-func (m *RedisClientList) ToolType() string           { return "shell" }
+func (m *RedisClientList) ToolType() string           { return "redis" }
 func (m *RedisClientList) RiskLevel() model.RiskLevel { return model.RiskLevelLow }
 func (m *RedisClientList) RiskProfile() module.RiskProfile {
 	return module.RiskProfile{Level: model.RiskLevelLow, Reversible: true, ImpactScope: "single_host"}

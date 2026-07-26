@@ -17,7 +17,7 @@ type MySQLBackup struct{}
 func (m *MySQLBackup) Code() string               { return "mysql_backup" }
 func (m *MySQLBackup) Name() string               { return "MySQL 备份" }
 func (m *MySQLBackup) Description() string        { return "使用 mysqldump 备份 MySQL 数据库" }
-func (m *MySQLBackup) ToolType() string           { return "shell" }
+func (m *MySQLBackup) ToolType() string           { return "mysql" }
 func (m *MySQLBackup) RiskLevel() model.RiskLevel { return model.RiskLevelMedium }
 func (m *MySQLBackup) RiskProfile() module.RiskProfile {
 	return module.RiskProfile{Level: model.RiskLevelMedium, Reversible: true, ImpactScope: "single_host"}

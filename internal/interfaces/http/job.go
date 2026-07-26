@@ -64,8 +64,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusBadRequest, fmt.Errorf("worker %s not found", wid))
 					return
 				}
-				if wk.WorkerType != req.WorkerType {
-					writeError(w, http.StatusBadRequest, fmt.Errorf("worker %s type %s != job type %s", wid, wk.WorkerType, req.WorkerType))
+				if !model.WorkerCanRunType(wk.WorkerType, req.WorkerType) {
+					writeError(w, http.StatusBadRequest, fmt.Errorf("worker %s type %s cannot run job type %s", wid, wk.WorkerType, req.WorkerType))
 					return
 				}
 
@@ -235,8 +235,8 @@ func (s *Server) handleDispatchJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("worker %s not found", wid))
 			return
 		}
-		if worker.WorkerType != base.WorkerType {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("worker %s type %s != job type %s", wid, worker.WorkerType, base.WorkerType))
+		if !model.WorkerCanRunType(worker.WorkerType, base.WorkerType) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("worker %s type %s cannot run job type %s", wid, worker.WorkerType, base.WorkerType))
 			return
 		}
 		targetID := base.ID
@@ -345,7 +345,7 @@ func (s *Server) handleCreateJobFromYAML(w http.ResponseWriter, r *http.Request)
 		allWorkers, _ := s.repo.ListWorkers()
 		workerIDs = nil
 		for _, w := range allWorkers {
-			if w.WorkerType == spec.WorkerType && w.Status == model.WorkerStatusOnline {
+			if model.WorkerCanRunType(w.WorkerType, spec.WorkerType) && w.Status == model.WorkerStatusOnline {
 				workerIDs = append(workerIDs, w.ID)
 			}
 		}

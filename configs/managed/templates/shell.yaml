@@ -1,0 +1,56 @@
+id: shell
+name: Shell templates
+templates:
+  - code: check_port
+    name: 端口监听检查
+    description: 检查端口监听状态。
+    tool_type: shell
+    command: ss -tlnp 2>/dev/null | grep :{{.Port}} || netstat -tlnp 2>/dev/null | grep :{{.Port}}
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: nginx}
+      - {name: Port, description: 端口号, required: true}
+  - code: check_process
+    name: 进程存活检查
+    description: 检查指定进程。
+    tool_type: shell
+    command: ps aux | grep -v grep | grep {{.ProcessName}}
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: nginx}
+      - {name: ProcessName, description: 进程名称, required: true}
+  - code: disk_usage_check
+    name: Disk usage check
+    description: Check filesystem usage for a path.
+    tool_type: shell
+    command: df -h {{.Path}}
+    risk_level: low
+    parameters:
+      - name: Path
+        description: Filesystem path to inspect.
+        required: false
+        default: /
+  - code: http_health_check
+    name: HTTP 健康检查
+    description: 检查 URL 是否可访问。
+    tool_type: shell
+    command: curl -s -o /dev/null -w '%{http_code}' --max-time {{.Timeout}} {{.URL}}
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: http}
+      - {name: URL, description: 检查地址, required: true}
+      - {name: Timeout, description: 超时秒数, required: false, default: "10"}
+  - code: read_log_tail
+    name: 日志尾部读取
+    description: 读取日志文件末尾。
+    tool_type: shell
+    command: tail -{{.Lines}} {{.LogFile}}
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: nginx}
+      - {name: LogFile, description: 日志文件, required: true}
+      - {name: Lines, description: 行数, required: false, default: "50"}
