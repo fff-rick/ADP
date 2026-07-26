@@ -42,6 +42,15 @@ type templateConfigYAML struct {
 	RiskLevel   model.RiskLevel     `yaml:"risk_level"`
 }
 
+// templateGroupConfigYAML lets one managed YAML document hold all templates
+// for a service type. The legacy single-template form remains supported for
+// API compatibility and existing managed configuration records.
+type templateGroupConfigYAML struct {
+	ID        string               `yaml:"id"`
+	Name      string               `yaml:"name"`
+	Templates []templateConfigYAML `yaml:"templates"`
+}
+
 type templateParamYAML struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
@@ -267,6 +276,21 @@ func isSupportedConfigKind(kind string) bool {
 func managedConfigIdentity(kind, raw string) (string, string, error) {
 	switch kind {
 	case configKindTemplate:
+		var group templateGroupConfigYAML
+		if err := yaml.Unmarshal([]byte(raw), &group); err != nil {
+			return "", "", fmt.Errorf("invalid template yaml: %w", err)
+		}
+		if len(group.Templates) > 0 {
+			if group.ID == "" {
+				return "", "", errors.New("template group id is required")
+			}
+			for _, tmpl := range group.Templates {
+				if _, err := commandTemplateFromYAML(tmpl); err != nil {
+					return "", "", err
+				}
+			}
+			return group.ID, fallbackName(group.Name, group.ID), nil
+		}
 		var cfg templateConfigYAML
 		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
 			return "", "", fmt.Errorf("invalid template yaml: %w", err)
@@ -379,27 +403,28 @@ func (s *Server) reloadManagedConfigs() error {
 func (s *Server) applyManagedConfig(cfg model.ManagedConfig) error {
 	switch cfg.Kind {
 	case configKindTemplate:
+		var group templateGroupConfigYAML
+		if err := yaml.Unmarshal([]byte(cfg.YAMLContent), &group); err != nil {
+			return err
+		}
+		if len(group.Templates) > 0 {
+			for _, raw := range group.Templates {
+				tmpl, err := commandTemplateFromYAML(raw)
+				if err != nil {
+					return err
+				}
+				s.templateEng.RegisterTemplate(tmpl)
+			}
+			return nil
+		}
+
 		var raw templateConfigYAML
 		if err := yaml.Unmarshal([]byte(cfg.YAMLContent), &raw); err != nil {
 			return err
 		}
-		tmpl := model.CommandTemplate{
-			Code:        raw.Code,
-			Name:        raw.Name,
-			Description: raw.Description,
-			ToolType:    raw.ToolType,
-			Command:     raw.Command,
-			Parameters:  convertTemplateParams(raw.Parameters),
-			RiskLevel:   raw.RiskLevel,
-		}
-		if tmpl.ToolType == "" {
-			tmpl.ToolType = "shell"
-		}
-		if tmpl.RiskLevel == "" {
-			tmpl.RiskLevel = model.RiskLevelLow
-		}
-		if tmpl.Code == "" || tmpl.Command == "" {
-			return errors.New("template code and command are required")
+		tmpl, err := commandTemplateFromYAML(raw)
+		if err != nil {
+			return err
 		}
 		s.templateEng.RegisterTemplate(tmpl)
 	case configKindPolicy:
@@ -456,6 +481,28 @@ func (s *Server) applyManagedConfig(cfg model.ManagedConfig) error {
 		return fmt.Errorf("unsupported config kind: %s", cfg.Kind)
 	}
 	return nil
+}
+
+func commandTemplateFromYAML(raw templateConfigYAML) (model.CommandTemplate, error) {
+	tmpl := model.CommandTemplate{
+		Code:        raw.Code,
+		Name:        raw.Name,
+		Description: raw.Description,
+		ToolType:    raw.ToolType,
+		Command:     raw.Command,
+		Parameters:  convertTemplateParams(raw.Parameters),
+		RiskLevel:   raw.RiskLevel,
+	}
+	if tmpl.ToolType == "" {
+		tmpl.ToolType = "shell"
+	}
+	if tmpl.RiskLevel == "" {
+		tmpl.RiskLevel = model.RiskLevelLow
+	}
+	if tmpl.Code == "" || tmpl.Command == "" {
+		return model.CommandTemplate{}, errors.New("template code and command are required")
+	}
+	return tmpl, nil
 }
 
 func convertTemplateParams(params []templateParamYAML) []model.TemplateParam {

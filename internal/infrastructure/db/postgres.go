@@ -481,15 +481,17 @@ func (r *PostgresRepository) AssignNextJob(workerID string) (model.Job, error) {
 		return model.Job{}, err
 	}
 
-	// Find the earliest queued job matching worker type.
+	// Find the earliest queued job compatible with the worker type. Shell is
+	// intentionally the only general-purpose worker type.
 	var jobID string
-	err = r.db.QueryRow(
-		`SELECT id FROM jobs
-		 WHERE status IN ($1, $2) AND worker_type = $3
-		 ORDER BY created_at ASC, id ASC
-		 LIMIT 1`,
-		model.JobStatusQueued, model.JobStatusPending, worker.WorkerType,
-	).Scan(&jobID)
+	query := `SELECT id FROM jobs WHERE status IN ($1, $2)`
+	args := []any{model.JobStatusQueued, model.JobStatusPending}
+	if model.NormalizeWorkerType(worker.WorkerType) != "shell" {
+		query += ` AND worker_type = $3`
+		args = append(args, worker.WorkerType)
+	}
+	query += ` ORDER BY created_at ASC, id ASC LIMIT 1`
+	err = r.db.QueryRow(query, args...).Scan(&jobID)
 	if err == sql.ErrNoRows {
 		return model.Job{}, fmt.Errorf("no queued jobs for worker type %s", worker.WorkerType)
 	}
@@ -511,9 +513,20 @@ func (r *PostgresRepository) AssignNextJob(workerID string) (model.Job, error) {
 }
 
 func (r *PostgresRepository) AssignJobToWorkers(jobID string, workerIDs []string) error {
+	job, err := r.GetJob(jobID)
+	if err != nil {
+		return err
+	}
 	now := time.Now()
 	for _, wid := range workerIDs {
-		_, err := r.db.Exec(
+		worker, err := r.GetWorker(wid)
+		if err != nil {
+			return err
+		}
+		if !model.WorkerCanRunType(worker.WorkerType, job.WorkerType) {
+			return fmt.Errorf("worker %s type %s cannot run job type %s", wid, worker.WorkerType, job.WorkerType)
+		}
+		_, err = r.db.Exec(
 			`UPDATE jobs SET status = $1, assigned_worker_id = $2, started_at = $3, updated_at = $4
 			 WHERE id = $5`,
 			model.JobStatusRunning, wid, now, now, jobID,

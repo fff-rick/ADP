@@ -27,7 +27,8 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// Client is the ADP worker agent that receives pushed jobs and executes commands.
+// Client is the transport-facing Agent. It owns registration, heartbeats,
+// control messages and result delivery; Runner owns execution.
 type Client struct {
 	serverURL           string
 	grpcServerAddr      string
@@ -43,6 +44,18 @@ type Client struct {
 	moduleReg           *module.Registry // module registry for idempotent execution
 	serviceConfigPath   string
 	serviceCatalog      *config.ServiceCatalog
+	runner              *Runner
+	runnerMu            sync.RWMutex
+}
+
+// Agent is the preferred name for the control-plane half of a Worker. Client
+// remains an alias so existing integrations and the server subcommand keep
+// compiling during the migration.
+type Agent = Client
+
+// NewAgent creates an Agent with its own local Runner.
+func NewAgent(serverURL, workerToken, name, workerType string, pollInterval time.Duration) *Agent {
+	return NewClient(serverURL, workerToken, name, workerType, pollInterval)
 }
 
 // NewClient creates a new worker client.
@@ -59,11 +72,12 @@ func NewClient(serverURL, workerToken, name, workerType string, pollInterval tim
 		hostCollectInterval: 60 * time.Second,
 		moduleReg:           builtin.NewRegistry(),
 		serviceConfigPath:   config.DefaultServicesConfigPath,
+		runner:              NewRunner(workerType),
 	}
 }
 
 // SetExecTimeout sets the command execution timeout.
-func (c *Client) SetExecTimeout(d time.Duration) { c.execTimeout = d }
+func (c *Client) SetExecTimeout(d time.Duration) { c.execTimeout = d; c.runner.SetExecTimeout(d) }
 
 // SetGRPCServerAddr sets the worker gRPC server address.
 func (c *Client) SetGRPCServerAddr(addr string) {
@@ -83,16 +97,15 @@ func (c *Client) SetLogToDB(enabled bool) { c.logToDB = enabled }
 func (c *Client) SetServicesConfigPath(path string) {
 	if strings.TrimSpace(path) != "" {
 		c.serviceConfigPath = path
+		c.runner.SetServicesConfigPath(path)
 	}
 }
 
 // Run starts the worker main loop.
 func (c *Client) Run() error {
-	catalog, err := config.LoadServiceCatalog(c.serviceConfigPath)
-	if err != nil {
-		return fmt.Errorf("load services config: %w", err)
+	if err := c.runner.Load(); err != nil {
+		return err
 	}
-	c.serviceCatalog = catalog
 	for {
 		if err := c.runGRPCStream(); err != nil {
 			log.Printf("[worker:%s] gRPC stream disconnected: %v", c.registeredID, err)
@@ -214,48 +227,45 @@ func (c *Client) executeJob(job model.Job) {
 }
 
 func (c *Client) executeJobLocally(job model.Job) (bool, string) {
-	if job.TemplateCode != "" {
-		if mod, err := c.moduleReg.Get(job.TemplateCode); err == nil {
-			params, service, err := c.resolveServiceProfile(job.TemplateCode, job.Parameters)
-			if err != nil {
-				return false, fmt.Sprintf("service profile: %v", err)
-			}
-			ctx := module.ExecContext{
-				Params:     params,
-				WorkerInfo: c.collectHostInfo(),
-				Timeout:    c.execTimeout,
-				Service:    service,
-			}
-			cr, checkErr := mod.Check(ctx)
-			if checkErr == nil && !cr.NeedsChange {
-				log.Printf("[worker:%s][job:%s] ok: %s", c.registeredID, job.ID, cr.CurrentState)
-				return true, cr.CurrentState
-			}
-			log.Printf("[worker:%s][job:%s] 执行: %s (%s)", c.registeredID, job.ID, mod.Name(), job.Command)
-			result, execErr := mod.Execute(ctx)
-			output := result.Output
-			success := result.Success
-			if execErr != nil {
-				output = fmt.Sprintf("%s\nerror: %v", output, execErr)
-				success = false
-			}
-			tag := ""
-			if result.Changed {
-				tag = " changed"
-			}
-			log.Printf("[worker:%s][job:%s] 成功%s: %s", c.registeredID, job.ID, tag, truncate(output, 200))
-			return success, output
-		}
+	c.runnerMu.RLock()
+	runner := c.runner
+	c.runnerMu.RUnlock()
+	return runner.Execute(job, c.registeredID)
+}
+
+// authorizeJob is the data-plane authorization boundary. Server-side routing
+// is useful for scheduling, but a worker must reject a mismatched or forged
+// job independently because it is the process that would execute the command.
+//
+// A non-shell worker may execute only a registered module for its own service
+// type. In particular, it never executes a raw shell command: parsing a
+// command line for "mysql" or "redis" would be bypassable with pipes, shell
+// substitutions, or a second command after a semicolon.
+func (c *Client) authorizeJob(job model.Job) error {
+	c.runnerMu.RLock()
+	runner := c.runner
+	c.runnerMu.RUnlock()
+	return runner.Authorize(job)
+}
+
+// restartRunner creates a fresh execution runtime without dropping the
+// Agent's control-plane connection. In the next phase this same boundary can
+// be backed by a child process instead of an in-process Runner.
+func (c *Client) restartRunner() error {
+	runner := NewRunner(c.workerType)
+	runner.SetExecTimeout(c.execTimeout)
+	runner.SetServicesConfigPath(c.serviceConfigPath)
+	if err := runner.Load(); err != nil {
+		return err
 	}
-	// Fallback shell.
-	log.Printf("[worker:%s][job:%s] 执行: %s", c.registeredID, job.ID, job.Command)
-	output, success := c.executeCommand(job.Command)
-	log.Printf("[worker:%s][job:%s] %s: %s", c.registeredID, job.ID, map[bool]string{true: "成功", false: "失败"}[success], truncate(output, 200))
-	return success, output
+	c.runnerMu.Lock()
+	c.runner = runner
+	c.runnerMu.Unlock()
+	return nil
 }
 
 func (c *Client) heartbeatEnvelope() *adpv1.WorkerEnvelope {
-	info := c.collectHostInfo()
+	info := CollectHostInfo()
 	return &adpv1.WorkerEnvelope{
 		Payload: &adpv1.WorkerEnvelope_Heartbeat{
 			Heartbeat: &adpv1.Heartbeat{
@@ -278,9 +288,14 @@ func (c *Client) handleCommand(command string, send func(*adpv1.WorkerEnvelope) 
 		log.Printf("[worker:%s] 收到停止指令(gRPC)，退出", c.registeredID)
 		return true
 	case "restart":
+		if err := c.restartRunner(); err != nil {
+			log.Printf("[worker:%s] 重启 Runner 失败: %v", c.registeredID, err)
+			_ = c.sendCommandAck(send, command, false)
+			return false
+		}
 		_ = c.sendCommandAck(send, command, true)
-		log.Printf("[worker:%s] 收到重启指令(gRPC)，退出", c.registeredID)
-		os.Exit(0)
+		log.Printf("[worker:%s] Runner 已重启，Agent 保持连接", c.registeredID)
+		return false
 	case "force_stop":
 		_ = c.sendCommandAck(send, command, true)
 		log.Printf("[worker:%s] 收到强制停止指令(gRPC)，立即退出", c.registeredID)

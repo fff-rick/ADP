@@ -112,7 +112,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		return errors.New("ADP_WORKER_TOKEN is required; supply it through a protected runtime secret")
 	}
 
-	client := worker.NewClient(cfg.ServerURL, cfg.WorkerToken, cfg.Name, cfg.Type, cfg.PollInterval)
+	client := worker.NewAgent(cfg.ServerURL, cfg.WorkerToken, cfg.Name, cfg.Type, cfg.PollInterval)
 	client.SetGRPCServerAddr(cfg.GRPCServerAddr)
 	client.SetExecTimeout(cfg.ExecTimeout)
 	client.SetHostCollectInterval(cfg.HostCollectInterval)

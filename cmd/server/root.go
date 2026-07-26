@@ -151,7 +151,7 @@ func runWorkerAsSubcommand(cmd *cobra.Command, _ []string) error {
 	logToDB, _ := cmd.Flags().GetBool("log-to-db")
 	servicesConfig, _ := cmd.Flags().GetString("services-config")
 
-	client := worker.NewClient(serverURL, workerToken, workerName, workerType, pollInterval)
+	client := worker.NewAgent(serverURL, workerToken, workerName, workerType, pollInterval)
 	client.SetGRPCServerAddr(grpcServerAddr)
 	client.SetExecTimeout(execTimeout)
 	client.SetHostCollectInterval(hostCollectInterval)

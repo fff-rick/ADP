@@ -212,7 +212,7 @@ func (s *Server) createJobsFromSpec(w http.ResponseWriter, r *http.Request, spec
 		allWorkers, _ := s.repo.ListWorkers()
 		workerIDs = nil
 		for _, w := range allWorkers {
-			if w.WorkerType == spec.WorkerType && w.Status == model.WorkerStatusOnline {
+			if model.WorkerCanRunType(w.WorkerType, spec.WorkerType) && w.Status == model.WorkerStatusOnline {
 				workerIDs = append(workerIDs, w.ID)
 			}
 		}

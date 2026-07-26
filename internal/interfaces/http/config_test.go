@@ -71,6 +71,48 @@ parameters:
 	t.Fatalf("managed template was not loaded: %+v", templates)
 }
 
+func TestManagedTemplateGroupReload(t *testing.T) {
+	server := NewServer(Config{
+		Addr:              ":0",
+		AdminUsername:     "admin",
+		AdminPassword:     "admin123",
+		AuthSecret:        "secret",
+		WorkerSharedToken: "worker-secret",
+	}, nil, nil)
+	app := httptest.NewServer(server.httpServer.Handler)
+	defer app.Close()
+
+	token, _, err := server.authService.Login("admin", "admin123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := mustJSONRequest(t, app.Client(), http.MethodPost, app.URL+"/api/v1/configs/templates", token, map[string]any{
+		"yaml_content": `id: redis
+name: Redis templates
+templates:
+  - code: redis_ping_test
+    name: Redis PING
+    tool_type: redis
+    command: redis-cli PING
+    risk_level: low
+  - code: redis_info_test
+    name: Redis INFO
+    tool_type: redis
+    command: redis-cli INFO
+    risk_level: low
+`,
+	}, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("save template group status = %d, want %d", status, http.StatusCreated)
+	}
+	for _, code := range []string{"redis_ping_test", "redis_info_test"} {
+		tmpl, ok := server.templateEng.GetTemplate(code)
+		if !ok || tmpl.ToolType != "redis" {
+			t.Fatalf("grouped template %q was not loaded correctly: %+v", code, tmpl)
+		}
+	}
+}
+
 func TestManagedParserRulesReload(t *testing.T) {
 	server := NewServer(Config{Addr: ":0", AdminUsername: "admin", AdminPassword: "admin123", AuthSecret: "secret", WorkerSharedToken: "worker-secret"}, nil, nil)
 	app := httptest.NewServer(server.httpServer.Handler)

@@ -1,0 +1,14 @@
+id: mysql
+name: MySQL templates
+templates:
+  - code: mysql_backup
+    name: MySQL 数据库备份
+    description: 使用 Worker 本地 MySQL 服务配置执行备份。
+    tool_type: mysql
+    command: mysqldump {{.Database}} > {{.OutputFile}}
+    risk_level: medium
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: mysql}
+      - {name: Database, description: 数据库名, required: true}
+      - {name: OutputFile, description: 输出文件, required: false, default: /tmp/backup.sql}

@@ -181,7 +181,7 @@ func (s *Store) AssignNextJob(workerID string) (model.Job, bool) {
 	)
 
 	for id, job := range s.jobs {
-		if (job.Status != model.JobStatusQueued && job.Status != model.JobStatusPending) || job.WorkerType != worker.WorkerType {
+		if (job.Status != model.JobStatusQueued && job.Status != model.JobStatusPending) || !model.WorkerCanRunType(worker.WorkerType, job.WorkerType) {
 			continue
 		}
 
@@ -246,7 +246,7 @@ func (s *Store) AssignJobToWorker(jobID, workerID string) (model.Job, error) {
 	if !ok {
 		return model.Job{}, fmt.Errorf("job not found")
 	}
-	if job.WorkerType != worker.WorkerType {
+	if !model.WorkerCanRunType(worker.WorkerType, job.WorkerType) {
 		return model.Job{}, fmt.Errorf("worker type does not match job type")
 	}
 
