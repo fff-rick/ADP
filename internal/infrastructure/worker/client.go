@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,8 +17,6 @@ import (
 	adpv1 "adp/api/proto/adp/v1"
 	"adp/internal/config"
 	"adp/internal/domain/model"
-	"adp/internal/module"
-	"adp/internal/module/builtin"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -41,9 +37,7 @@ type Client struct {
 	execTimeout         time.Duration
 	hostCollectInterval time.Duration
 	logToDB             bool
-	moduleReg           *module.Registry // module registry for idempotent execution
 	serviceConfigPath   string
-	serviceCatalog      *config.ServiceCatalog
 	runner              *Runner
 	runnerMu            sync.RWMutex
 }
@@ -70,7 +64,6 @@ func NewClient(serverURL, workerToken, name, workerType string, pollInterval tim
 		httpClient:          &http.Client{Timeout: 5 * time.Second},
 		execTimeout:         30 * time.Second,
 		hostCollectInterval: 60 * time.Second,
-		moduleReg:           builtin.NewRegistry(),
 		serviceConfigPath:   config.DefaultServicesConfigPath,
 		runner:              NewRunner(workerType),
 	}
@@ -345,18 +338,6 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-// executeCommand runs a shell command with timeout and returns combined output.
-func (c *Client) executeCommand(cmd string) (string, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), c.execTimeout)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).CombinedOutput()
-	if err != nil {
-		return fmt.Sprintf("%s\n[exit_error: %v]", string(out), err), false
-	}
-	return string(out), true
-}
-
 // truncate shortens a string to maxLen characters.
 func truncate(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
@@ -364,32 +345,6 @@ func truncate(s string, maxLen int) string {
 		return strings.ReplaceAll(s, "\n", "\\n")
 	}
 	return strings.ReplaceAll(s[:maxLen], "\n", "\\n") + "..."
-}
-
-// collectHostInfo gathers host-level information.
-func (c *Client) collectHostInfo() model.HostInfo {
-	info := model.HostInfo{}
-
-	hostname, err := os.Hostname()
-	if err == nil {
-		info.Hostname = hostname
-	}
-
-	// Get outbound IP.
-	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
-		if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			info.IPAddress = addr.IP.String()
-		}
-		_ = conn.Close()
-	}
-
-	// CPU usage from /proc/stat (Linux).
-	info.CPUUsage = readCPUUsage()
-
-	// Disk usage for / mount.
-	info.StorageUsage = readDiskUsage()
-
-	return info
 }
 
 // readCPUUsage reads CPU usage from /proc/stat (Linux only).
