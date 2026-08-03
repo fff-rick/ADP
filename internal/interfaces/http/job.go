@@ -308,6 +308,36 @@ type yamlJobRequest struct {
 	YAML string `json:"yaml"`
 }
 
+// validateAndFixYAML is retained only for human-authored batch jobs. It is not
+// part of the Agent path and never accepts model-generated YAML.
+func (s *Server) validateAndFixYAML(spec *YAMLJobSpec) error {
+	if len(spec.Tasks) == 0 {
+		return errors.New("tasks list is empty")
+	}
+	if spec.WorkerType == "" {
+		return errors.New("worker_type is required")
+	}
+	for i := range spec.Tasks {
+		task := &spec.Tasks[i]
+		if task.Template == "" {
+			return fmt.Errorf("task %d: template is required", i+1)
+		}
+		if task.Parameters == nil {
+			task.Parameters = map[string]string{}
+		}
+		if _, err := s.moduleReg.Get(task.Template); err != nil {
+			return fmt.Errorf("task %d: module %q is not registered", i+1, task.Template)
+		}
+		if err := s.policyEng.ValidateTemplate(task.Template); err != nil {
+			return err
+		}
+		if err := model.ValidateNoInlineSecrets(task.Parameters); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // handleCreateJobFromYAML creates jobs from a YAML definition.
 func (s *Server) handleCreateJobFromYAML(w http.ResponseWriter, r *http.Request) {
 	var req yamlJobRequest

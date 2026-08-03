@@ -23,10 +23,10 @@ ADP 是一个面向智能运维场景的原型项目，当前定义为“基于 
 ## 模块边界
 
 - `Web/API`：认证、请求入口、结果查询
-- `Control Plane`：任务解析、任务规划、策略校验、调度控制、结果分析
+- `Control Plane`：Agent Runtime、工具执行、策略校验、调度控制、结果分析
 - `Scheduler`：任务入队、任务分发、失败重试、超时处理、执行追踪
 - `Worker`：只负责受控执行，不做自主决策
-- `LLM Gateway`：统一模型调用抽象层
+- `LLM Gateway`：统一 Tool-Calling 模型调用抽象层
 - `MySQL`：保存元数据、任务定义、任务执行记录、审计日志、故障案例
 - `Redis`：承担队列、缓存和轻量协调能力
 
@@ -119,12 +119,13 @@ ADP/
 目前已经完成 Phase 1、Phase 2、Phase 3、Phase 4 和 Phase 5：
 
 - Phase 1：最小调度闭环（HTTP API、JWT 鉴权、Worker 注册/心跳、任务创建/分发/完成）
-- Phase 2：AI 解析与受控执行（LLM 调用接口、自然语言解析、命令模板、工具白名单、MySQL 备份/HTTP 健康检查模板）
-- Phase 3：故障诊断与分析（AI 任务规划、Nginx/Redis 诊断模板、真实命令执行与结果采集、AI 分析报告输出）
+- Phase 2/3 的旧 LLM 解析、YAML 生成和静态诊断计划链路已移除，正在由 Tool-Calling Agent 重新实现。
 - Phase 4：风控与人工确认（`waiting_approval`、人工审批接口、全链路审计日志）
 - Phase 5：经验库与可观测性（故障案例入库、历史案例查询、相似建议、Prometheus 指标）
 
 详细实现说明见 [docs/phase1.md](./docs/phase1.md) 和 [docs/project/dev-log.md](./docs/project/dev-log.md)。
+
+LLM 从“生成 JSON/YAML”演进为受控 Tool-Calling 运维 Agent 的设计和迁移路线见 [docs/design/2026-08-03-agent-architecture-upgrade.md](./docs/design/2026-08-03-agent-architecture-upgrade.md)。该方案保持 Worker 受控执行和审批边界，不赋予模型任意命令执行能力。
 
 ## 本地运行
 
@@ -170,7 +171,7 @@ Worker 会连接 `configs/worker/adp.yaml` 中的 `grpc_server_addr`，通过 gR
 - 配置目录说明见 [configs/README.md](./configs/README.md)
 - 服务端本地配置示例见 [configs/server/adp.yaml.example](./configs/server/adp.yaml.example)
 - Worker 配置见 [configs/worker/adp.yaml](./configs/worker/adp.yaml)
-- AI 上下文配置见 [configs/ai/ai_context.yaml](./configs/ai/ai_context.yaml)
+- Agent 配置通过 `agent.base_url`、`agent.api_key`、`agent.model` 和 `agent.max_steps` 提供。
 - 环境变量示例见 [configs/env/app.env.example](./configs/env/app.env.example)
 
 ## Protobuf 生成
@@ -188,22 +189,13 @@ protoc --go_out=. --go-grpc_out=. \
 
 ## API 总览
 
-### Phase 2 任务 API
+### Agent API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/templates` | 列出所有可用命令模板 |
-| POST | `/api/v1/tasks/parse` | 将自然语言解析为结构化任务 |
-| POST | `/api/v1/tasks/run` | 创建受控任务（解析→模板渲染→白名单校验→等待审批或调度） |
+| POST | `/api/v1/agent/runs` | 运行受控 Tool-Calling Agent；输入为 `{"input":"..."}` |
 
-### Phase 3 诊断 API
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/v1/diagnosis/plan` | 从故障描述生成诊断计划 |
-| POST | `/api/v1/diagnosis/plan/{id}/execute` | 执行诊断计划的所有步骤 |
-| GET | `/api/v1/diagnosis/plan/{id}` | 获取计划及步骤执行结果 |
-| POST | `/api/v1/diagnosis/plan/{id}/analyze` | 分析结果，生成诊断报告 |
+Agent 通过目标 Worker 在其宿主机执行已注册 Module：可读取 Worker 上报的宿主机事实、执行 `host_diagnostics` 等只读诊断，并可创建 `restart_service` 修复操作。修复操作必须使用 Worker 本地 `services.cnf` 中固定的 `unit`，且默认策略要求人工审批；Agent 不具备任意 bash 权限。
 
 ### Phase 4 审批与审计 API
 
@@ -224,19 +216,9 @@ protoc --go_out=. --go-grpc_out=. \
 示例：
 
 ```bash
-# 生成 Nginx 诊断计划
-curl -X POST http://127.0.0.1:8080/api/v1/diagnosis/plan \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"description":"nginx 无法访问，网站打不开了"}'
-
-# 执行诊断计划
-curl -X POST http://127.0.0.1:8080/api/v1/diagnosis/plan/plan-000001/execute \
-  -H "Authorization: Bearer $TOKEN"
-
-# 分析诊断结果
-curl -X POST http://127.0.0.1:8080/api/v1/diagnosis/plan/plan-000001/analyze \
-  -H "Authorization: Bearer $TOKEN"
+curl -X POST http://127.0.0.1:8080/api/v1/agent/runs \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"input":"检查 worker-1 上的 Nginx 是否正常"}'
 ```
 
 ## 下一步

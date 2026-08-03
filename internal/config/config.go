@@ -14,7 +14,7 @@ type ServerConfig struct {
 	LLMBaseURL            string
 	LLMAPIKey             string
 	LLMModel              string
-	AIContextPath         string
+	AgentMaxSteps         int
 	ManagedConfigDir      string
 	ManagedConfigSyncMode string
 }

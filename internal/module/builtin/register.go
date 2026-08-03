@@ -9,6 +9,8 @@ func RegisterAll(reg *module.Registry) {
 	reg.Register(&CheckPort{})
 	reg.Register(&HTTPHealthCheck{})
 	reg.Register(&ReadLogTail{})
+	reg.Register(&HostDiagnostics{})
+	reg.Register(&RestartService{})
 	reg.Register(&RedisPing{})
 	reg.Register(&RedisInfo{})
 	reg.Register(&RedisSlowlogGet{})

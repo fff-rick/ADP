@@ -338,15 +338,6 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-// truncate shortens a string to maxLen characters.
-func truncate(s string, maxLen int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= maxLen {
-		return strings.ReplaceAll(s, "\n", "\\n")
-	}
-	return strings.ReplaceAll(s[:maxLen], "\n", "\\n") + "..."
-}
-
 // readCPUUsage reads CPU usage from /proc/stat (Linux only).
 func readCPUUsage() float64 {
 	data, err := os.ReadFile("/proc/stat")

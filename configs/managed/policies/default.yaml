@@ -25,6 +25,9 @@ allowed_templates:
   - redis_info
   - redis_slowlog_get
   - redis_client_list
+
+  - host_diagnostics
+  - restart_service
   - disk_usage_check
 high_risk_keywords:
   - delete

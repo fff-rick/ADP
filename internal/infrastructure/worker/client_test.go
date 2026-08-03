@@ -95,12 +95,10 @@ func TestTypedWorkerAuthorization(t *testing.T) {
 	}
 }
 
-func TestShellWorkerCanRunEveryJobType(t *testing.T) {
+func TestShellWorkerRejectsRawCommand(t *testing.T) {
 	shellWorker := NewClient("http://example.invalid", "token", "shell-1", "shell", time.Second)
-	for _, jobType := range []string{"shell", "mysql", "redis"} {
-		if err := shellWorker.authorizeJob(model.Job{WorkerType: jobType, Command: "echo permitted"}); err != nil {
-			t.Fatalf("shell worker rejected %s job: %v", jobType, err)
-		}
+	if err := shellWorker.authorizeJob(model.Job{WorkerType: "shell", Command: "echo forbidden"}); err == nil {
+		t.Fatal("shell worker accepted a raw command")
 	}
 }
 
