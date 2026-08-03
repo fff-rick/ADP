@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"adp/internal/domain/model"
 )
@@ -57,10 +56,6 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if job.SourceType == "diagnosis_plan" {
-			s.updatePlanStatusAfterApproval(job.SourceID)
-		}
-
 		action := "job.approval.rejected"
 		if *req.Approved {
 			action = "job.approval.approved"
@@ -76,26 +71,4 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeError(w, http.StatusInternalServerError, errors.New("no store configured"))
-}
-
-func (s *Server) updatePlanStatusAfterApproval(planID string) {
-	if planID == "" {
-		return
-	}
-
-	if s.repo == nil {
-		return
-	}
-
-	plan, err := s.repo.GetPlan(planID)
-	if err != nil {
-		return
-	}
-
-	synced := s.syncPlanWithJobs(plan)
-	plan.Status = synced.Status
-	plan.Steps = synced.Steps
-	plan.UpdatedAt = time.Now()
-
-	_ = s.repo.UpdatePlan(planID, plan)
 }

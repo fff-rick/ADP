@@ -29,6 +29,7 @@ const elements = {
   taskParams: byId("task-params"),
   taskOutput: byId("task-output"),
   taskList: byId("task-list"),
+  agentTimeline: byId("agent-timeline"),
   templateList: byId("template-list"),
   configForm: byId("config-form"),
   configKind: byId("config-kind"),
@@ -493,46 +494,24 @@ async function handleTaskSubmit(event) {
   event.preventDefault();
   if (!ensureAuthed()) return;
 
-  var action = (event.submitter && event.submitter.dataset.action) || "parse";
   var input = elements.taskInput ? elements.taskInput.value.trim() : "";
   if (!input) {
     showToast("先输入任务描述");
     return;
   }
 
-  var parameters;
   try {
-    parameters = parseOptionalJSON((elements.taskParams ? elements.taskParams.value.trim() : "") || "");
-  } catch (error) {
-    showToast(error.message);
-    return;
-  }
-
-  try {
-    if (action === "parse") {
-      var parseResult = await authedRequest("/api/v1/tasks/parse", {
-        method: "POST",
-        body: JSON.stringify({ input: input }),
-      });
-      if (elements.taskOutput) {
-        elements.taskOutput.textContent = JSON.stringify(parseResult, null, 2);
-      }
-      if (parseResult.intent === "diagnose") {
-        showToast("已识别为诊断意图，多步骤计划请点击生成 YAML");
-        return;
-      }
-      showToast("Task 解析完成");
-      return;
-    }
-
-    var runResult = await authedRequest("/api/v1/tasks/run", {
+    if (elements.taskOutput) elements.taskOutput.textContent = "Agent 正在调用受控工具…";
+    if (elements.agentTimeline) elements.agentTimeline.textContent = "运行中…";
+    var runResult = await authedRequest("/api/v1/agent/runs", {
       method: "POST",
-      body: JSON.stringify({ input: input, parameters: parameters }),
+      body: JSON.stringify({ input: input }),
     });
     if (elements.taskOutput) {
-      elements.taskOutput.textContent = JSON.stringify(runResult, null, 2);
+      elements.taskOutput.textContent = runResult.answer || "Agent 未返回结论。";
     }
-    showToast(runResult.approval_required ? "Task 已进入审批队列" : "Task 已创建");
+    renderAgentTimeline(runResult.events || []);
+    showToast("Agent 已完成 " + (runResult.steps || 0) + " 个推理步骤");
     await refreshTasksPage();
   } catch (error) {
     if (elements.taskOutput) {
@@ -540,6 +519,24 @@ async function handleTaskSubmit(event) {
     }
     showToast(error.message);
   }
+}
+
+function renderAgentTimeline(events) {
+  if (!elements.agentTimeline) return;
+  if (!events.length) { elements.agentTimeline.textContent = "本次没有工具调用。"; return; }
+  elements.agentTimeline.innerHTML = "";
+  events.forEach(function(event) {
+    var item = document.createElement("div");
+    item.className = "list-card";
+    var title = document.createElement("strong");
+    title.textContent = "步骤 " + event.step + " · " + (event.type === "tool" ? "工具：" + event.name : "Agent 推理");
+    var detail = document.createElement("pre");
+    detail.className = "code-block";
+    detail.style.marginTop = "8px";
+    detail.style.minHeight = "0";
+    detail.textContent = typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2);
+    item.appendChild(title); item.appendChild(detail); elements.agentTimeline.appendChild(item);
+  });
 }
 
 async function handleApprovalAction(event) {
@@ -728,7 +725,7 @@ async function refreshJobsPage() {
       return '<div class="list-card">' +
         '<div style="flex: 1;">' +
           '<strong style="font-size: 0.875rem;">' + escapeHTML(job.name) + '</strong>' +
-          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(job.command || "无命令详情") + '</span>' +
+          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(job.template_code || "Legacy job") + '</span>' +
         '</div>' +
         '<div class="list-card-meta">' +
           '<span class="status-pill ' + statusClass(job.status) + '"><span class="status-dot"></span>' + escapeHTML(job.status) + '</span>' +
@@ -771,12 +768,7 @@ async function refreshTasksPage() {
   state.user = summary.user;
   updateSessionState(summary.current_time);
 
-  var results = await Promise.all([
-    authedRequest("/api/v1/tasks"),
-    authedRequest("/api/v1/templates"),
-  ]);
-  var tasks = results[0];
-  var templates = results[1];
+  var tasks = await authedRequest("/api/v1/jobs?source_type=agent");
 
   renderList(
     elements.taskList,
@@ -785,7 +777,7 @@ async function refreshTasksPage() {
       return '<div class="list-card">' +
         '<div style="flex: 1;">' +
           '<strong style="font-size: 0.875rem;">' + escapeHTML(task.name) + '</strong>' +
-          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(task.command || "无命令详情") + '</span>' +
+          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(task.template_code || "受控 Module") + '</span>' +
         '</div>' +
         '<div class="list-card-meta">' +
           '<span class="status-pill ' + statusClass(task.status) + '"><span class="status-dot"></span>' + escapeHTML(task.status) + '</span>' +
@@ -794,28 +786,8 @@ async function refreshTasksPage() {
         '</div>' +
       '</div>';
     },
-    "暂无 Task 记录。"
+    "暂无 Agent 创建的操作。"
   );
-
-  renderList(
-    elements.templateList,
-    templates,
-    function(template) {
-      return '<div class="list-card template-card" onclick="quickFillFromTemplate(\'' + escapeHTML(template.code) + '\',\'' + escapeHTML(template.name) + '\',\'' + escapeHTML(JSON.stringify(template.parameters || [])) + '\')" style="cursor: pointer;">' +
-        '<div style="flex: 1;">' +
-          '<strong style="font-size: 0.875rem;">' + escapeHTML(template.name) + '</strong>' +
-          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(template.description || template.code) + '</span>' +
-        '</div>' +
-        '<div class="list-card-meta">' +
-          '<span class="status-pill" style="background: var(--accent-bg); color: var(--accent);">' + escapeHTML(template.tool_type) + '</span>' +
-          '<span class="mono">' + escapeHTML(template.code) + '</span>' +
-          '<span style="font-size: 0.6875rem; color: var(--accent);">点击使用 →</span>' +
-        '</div>' +
-      '</div>';
-    },
-    "暂无模板。"
-  );
-  await refreshYAMLList();
 }
 
 /* ── Managed Configs ── */
@@ -968,7 +940,7 @@ function renderSummaryMetrics(summary) {
     ["在线 Workers", summary.metrics.workers_online, summary.workers.length + " 个已注册"],
     ["Jobs 总数", summary.metrics.jobs_total, summary.metrics.jobs_success + " 成功 / " + summary.metrics.jobs_failed + " 失败"],
     ["待审批", summary.metrics.jobs_waiting_approval, "等待人工确认"],
-    ["模板总数", summary.templates_total, "可用于 Task 解析"],
+    ["受控能力", summary.templates_total, "可供 Agent 调用的 Module"],
   ];
 
   elements.metricsGrid.innerHTML = metrics.map(function(m) {
@@ -988,7 +960,7 @@ function renderApprovals(items) {
       return '<div class="list-card">' +
         '<div style="flex: 1;">' +
           '<strong style="font-size: 0.875rem;">' + escapeHTML(job.name) + '</strong>' +
-          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(job.command || "无命令详情") + '</span>' +
+          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(job.template_code || "Legacy job") + '</span>' +
         '</div>' +
         '<div class="list-card-meta">' +
           '<span class="status-pill ' + statusClass(job.status) + '"><span class="status-dot"></span>' + escapeHTML(job.status) + '</span>' +
@@ -1032,8 +1004,8 @@ function renderLoggedOutPlaceholders() {
   renderList(elements.userList, [], function() { return ""; }, "登录后显示用户列表。");
   renderList(elements.workerList, [], function() { return ""; }, "登录后显示 Worker 列表。");
   renderList(elements.jobList, [], function() { return ""; }, "登录后显示 Job 列表。");
-  renderList(elements.taskList, [], function() { return ""; }, "登录后显示 Task 记录。");
-  renderList(elements.templateList, [], function() { return ""; }, "登录后显示模板。");
+  renderList(elements.taskList, [], function() { return ""; }, "登录后显示 Agent 创建的操作。");
+  if (elements.agentTimeline) elements.agentTimeline.textContent = "登录后可查看工具调用时间线。";
   renderList(elements.configList, [], function() { return ""; }, "登录后显示受管配置。");
   renderList(elements.approvalList, [], function() { return ""; }, "登录后显示待审批任务。");
   renderList(elements.auditList, [], function() { return ""; }, "登录后显示审计记录。");
@@ -1041,7 +1013,7 @@ function renderLoggedOutPlaceholders() {
     elements.metricsGrid.innerHTML = "";
   }
   if (elements.taskOutput) {
-    elements.taskOutput.textContent = "等待输入任务。";
+    elements.taskOutput.textContent = "等待 Agent 请求。";
   }
 }
 

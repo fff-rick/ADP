@@ -1,12 +1,10 @@
 package worker
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -58,29 +56,21 @@ func (r *Runner) Execute(job model.Job, workerID string) (bool, string) {
 		log.Printf("[worker:%s][job:%s] 拒绝执行: %v", workerID, job.ID, err)
 		return false, "authorization denied: " + err.Error()
 	}
-	if job.TemplateCode != "" {
-		if mod, err := r.moduleReg.Get(job.TemplateCode); err == nil {
-			params, service, err := r.resolveServiceProfile(job.TemplateCode, job.Parameters)
-			if err != nil {
-				return false, fmt.Sprintf("service profile: %v", err)
-			}
-			ctx := module.ExecContext{Params: params, WorkerInfo: CollectHostInfo(), Timeout: r.execTimeout, Service: service}
-			cr, checkErr := mod.Check(ctx)
-			if checkErr == nil && !cr.NeedsChange {
-				log.Printf("[worker:%s][job:%s] ok: %s", workerID, job.ID, cr.CurrentState)
-				return true, cr.CurrentState
-			}
-			result, execErr := mod.Execute(ctx)
-			output, success := result.Output, result.Success
-			if execErr != nil {
-				output, success = fmt.Sprintf("%s\nerror: %v", output, execErr), false
-			}
-			return success, output
-		}
+	mod, _ := r.moduleReg.Get(job.TemplateCode)
+	params, service, err := r.resolveServiceProfile(job.TemplateCode, job.Parameters)
+	if err != nil {
+		return false, fmt.Sprintf("service profile: %v", err)
 	}
-	output, success := r.executeCommand(job.Command)
-	log.Printf("[worker:%s][job:%s] %s: %s", workerID, job.ID, map[bool]string{true: "成功", false: "失败"}[success], truncate(output, 200))
-	return success, output
+	ctx := module.ExecContext{Params: params, WorkerInfo: CollectHostInfo(), Timeout: r.execTimeout, Service: service}
+	cr, checkErr := mod.Check(ctx)
+	if checkErr == nil && !cr.NeedsChange {
+		return true, cr.CurrentState
+	}
+	result, execErr := mod.Execute(ctx)
+	if execErr != nil {
+		return false, fmt.Sprintf("%s\nerror: %v", result.Output, execErr)
+	}
+	return result.Success, result.Output
 }
 
 func (r *Runner) Authorize(job model.Job) error {
@@ -88,13 +78,10 @@ func (r *Runner) Authorize(job model.Job) error {
 	if !model.WorkerCanRunType(workerType, job.WorkerType) {
 		return fmt.Errorf("worker type %q cannot run job type %q", r.workerType, job.WorkerType)
 	}
-	if workerType == "shell" {
-		return nil
-	}
 	if strings.TrimSpace(job.TemplateCode) == "" {
-		return fmt.Errorf("typed worker %q does not accept raw shell commands", workerType)
+		return fmt.Errorf("raw commands are not accepted; a registered module is required")
 	}
-	if model.NormalizeWorkerType(job.Parameters["ServiceType"]) != workerType {
+	if workerType != "shell" && model.NormalizeWorkerType(job.Parameters["ServiceType"]) != workerType {
 		return fmt.Errorf("typed worker %q requires ServiceType=%q", workerType, workerType)
 	}
 	mod, err := r.moduleReg.Get(job.TemplateCode)
@@ -143,16 +130,6 @@ func (r *Runner) resolveServiceProfile(templateCode string, source map[string]st
 		params["LogFile"] = profile.LogFile
 	}
 	return params, &profile, nil
-}
-
-func (r *Runner) executeCommand(cmd string) (string, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), r.execTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).CombinedOutput()
-	if err != nil {
-		return fmt.Sprintf("%s\n[exit_error: %v]", string(out), err), false
-	}
-	return string(out), true
 }
 
 // CollectHostInfo is shared runtime data produced by the Runner, not the

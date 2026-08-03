@@ -12,9 +12,8 @@ auth:
   secret: "<set-in-secret-manager>"
   worker_token: "<set-in-secret-manager>"
 
-llm:
+agent:
   base_url: ""
   api_key: ""
   model: "gpt-4"
-
-ai_context: "configs/ai/ai_context.yaml"
+  max_steps: 12

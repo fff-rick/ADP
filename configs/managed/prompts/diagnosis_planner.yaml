@@ -1,5 +1,0 @@
-code: diagnosis_planner
-name: Diagnosis planner prompt
-content: |
-  You are the ADP diagnosis planner. Produce strict JSON only and use only approved managed templates.
-  For predictable production scenarios, prefer the managed diagnosis plans and their configured steps.

@@ -57,10 +57,10 @@ func init() {
 	serveCmd.Flags().String("admin-password", "", "Initial admin password (required)")
 	serveCmd.Flags().String("auth-secret", "", "JWT signing secret (required)")
 	serveCmd.Flags().String("worker-token", "", "Worker shared secret token (required)")
-	serveCmd.Flags().String("llm-base-url", "", "LLM API base URL (optional)")
-	serveCmd.Flags().String("llm-api-key", "", "LLM API key (optional)")
-	serveCmd.Flags().String("llm-model", "gpt-4", "LLM model name")
-	serveCmd.Flags().String("ai-context", "", "Path to AI context YAML file")
+	serveCmd.Flags().String("agent-base-url", "", "Agent model API base URL")
+	serveCmd.Flags().String("agent-api-key", "", "Agent model API key")
+	serveCmd.Flags().String("agent-model", "", "Agent model name")
+	serveCmd.Flags().Int("agent-max-steps", 12, "Maximum tool-calling steps per Agent run")
 	serveCmd.Flags().String("managed-config-dir", "configs/managed", "Source-controlled managed YAML configuration directory")
 	serveCmd.Flags().String("managed-config-sync-mode", "missing", "Managed config sync mode: missing or enforce")
 	serveCmd.Flags().String("config", "", "Path to YAML config file")
@@ -74,10 +74,10 @@ func init() {
 	_ = viper.BindPFlag("auth.admin_password", serveCmd.Flags().Lookup("admin-password"))
 	_ = viper.BindPFlag("auth.secret", serveCmd.Flags().Lookup("auth-secret"))
 	_ = viper.BindPFlag("auth.worker_token", serveCmd.Flags().Lookup("worker-token"))
-	_ = viper.BindPFlag("llm.base_url", serveCmd.Flags().Lookup("llm-base-url"))
-	_ = viper.BindPFlag("llm.api_key", serveCmd.Flags().Lookup("llm-api-key"))
-	_ = viper.BindPFlag("llm.model", serveCmd.Flags().Lookup("llm-model"))
-	_ = viper.BindPFlag("ai_context", serveCmd.Flags().Lookup("ai-context"))
+	_ = viper.BindPFlag("agent.base_url", serveCmd.Flags().Lookup("agent-base-url"))
+	_ = viper.BindPFlag("agent.api_key", serveCmd.Flags().Lookup("agent-api-key"))
+	_ = viper.BindPFlag("agent.model", serveCmd.Flags().Lookup("agent-model"))
+	_ = viper.BindPFlag("agent.max_steps", serveCmd.Flags().Lookup("agent-max-steps"))
 	_ = viper.BindPFlag("managed_config_dir", serveCmd.Flags().Lookup("managed-config-dir"))
 	_ = viper.BindPFlag("managed_config_sync_mode", serveCmd.Flags().Lookup("managed-config-sync-mode"))
 
@@ -197,10 +197,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AdminPassword:         viper.GetString("auth.admin_password"),
 		AuthSecret:            viper.GetString("auth.secret"),
 		WorkerSharedToken:     viper.GetString("auth.worker_token"),
-		LLMBaseURL:            viper.GetString("llm.base_url"),
-		LLMAPIKey:             viper.GetString("llm.api_key"),
-		LLMModel:              viper.GetString("llm.model"),
-		AIContextPath:         viper.GetString("ai_context"),
+		LLMBaseURL:            viper.GetString("agent.base_url"),
+		LLMAPIKey:             viper.GetString("agent.api_key"),
+		LLMModel:              viper.GetString("agent.model"),
+		AgentMaxSteps:         viper.GetInt("agent.max_steps"),
 		ManagedConfigDir:      viper.GetString("managed_config_dir"),
 		ManagedConfigSyncMode: viper.GetString("managed_config_sync_mode"),
 	}
@@ -242,7 +242,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLMBaseURL:            cfg.LLMBaseURL,
 		LLMAPIKey:             cfg.LLMAPIKey,
 		LLMModel:              cfg.LLMModel,
-		AIContextPath:         cfg.AIContextPath,
+		AgentMaxSteps:         cfg.AgentMaxSteps,
 		ManagedConfigDir:      cfg.ManagedConfigDir,
 		ManagedConfigSyncMode: cfg.ManagedConfigSyncMode,
 	}, repo, authService)

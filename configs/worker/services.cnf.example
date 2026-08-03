@@ -1,6 +1,8 @@
 # Copy to /etc/adp/services.cnf on each Worker. Do not commit the real file.
 # The Worker accepts only profile names from tasks; it never accepts a file path
 # or inline credentials from the control plane.
+# `unit` is optional for diagnostics and required by the `restart_service`
+# Module. It is a fixed local systemd unit, never an Agent-supplied command.
 
 [mysql_prod]
 type = mysql
@@ -20,6 +22,7 @@ type = nginx
 host = 127.0.0.1
 port = 80
 process = nginx
+unit = nginx.service
 log_file = /var/log/nginx/error.log
 
 [adp_http]

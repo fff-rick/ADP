@@ -23,6 +23,7 @@ type RuntimeServiceProfile struct {
 	Password   string
 	URL        string
 	Process    string
+	Unit       string
 	LogFile    string
 	ConfigFile string
 }
@@ -91,6 +92,8 @@ func LoadServiceCatalog(path string) (*ServiceCatalog, error) {
 			current.URL = strings.TrimSpace(value)
 		case "process":
 			current.Process = strings.TrimSpace(value)
+		case "unit":
+			current.Unit = strings.TrimSpace(value)
 		case "log_file":
 			current.LogFile = strings.TrimSpace(value)
 		case "config_file":

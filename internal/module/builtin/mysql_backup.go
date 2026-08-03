@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"time"
 
 	"adp/internal/config"
 	"adp/internal/domain/model"
@@ -43,9 +42,15 @@ func (m *MySQLBackup) Execute(ctx module.ExecContext) (module.Result, error) {
 		return module.Result{Success: false}, err
 	}
 	defer os.Remove(credentialsFile) //nolint:errcheck // best-effort removal of temporary credentials
-	filename := paramDefault(ctx.Params, "OutputFile", fmt.Sprintf("/tmp/%s_backup_%s.sql", db, time.Now().Format("20060102_150405")))
-	cmd := fmt.Sprintf("mysqldump --defaults-extra-file=%s %s > %s 2>&1", credentialsFile, db, filename)
-	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
+	backupFile, err := os.CreateTemp("", "adp-mysql-backup-*.sql")
+	if err != nil {
+		return module.Result{Success: false}, fmt.Errorf("create backup file: %w", err)
+	}
+	filename := backupFile.Name()
+	if err := backupFile.Close(); err != nil {
+		return module.Result{Success: false}, fmt.Errorf("close backup file: %w", err)
+	}
+	out, err := exec.Command("mysqldump", "--defaults-extra-file="+credentialsFile, "--result-file="+filename, db).CombinedOutput()
 	if err != nil {
 		return module.Result{Success: false, Output: string(out), Facts: map[string]string{"backup_file": filename}}, nil
 	}

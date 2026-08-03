@@ -12,10 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"adp/internal/application/analyzer"
-	"adp/internal/application/parser"
-	"adp/internal/application/planner"
-	"adp/internal/config"
+	"adp/internal/application/agent"
 	"adp/internal/domain/model"
 	"adp/internal/domain/policy"
 	"adp/internal/domain/template"
@@ -36,7 +33,7 @@ type Config struct {
 	LLMBaseURL            string
 	LLMAPIKey             string
 	LLMModel              string
-	AIContextPath         string
+	AgentMaxSteps         int
 	ManagedConfigDir      string
 	ManagedConfigSyncMode string
 }
@@ -45,21 +42,16 @@ type Config struct {
 func (c Config) HasLLM() bool { return c.LLMBaseURL != "" }
 
 type Server struct {
-	config        Config
-	repo          db.Repository
-	authService   *auth.Service
-	templateEng   *template.Engine
-	policyEng     *policy.Engine
-	moduleReg     *module.Registry
-	workerHub     *workerstream.Hub
-	taskParser    *parser.Parser
-	planner       *planner.Planner
-	analyzer      *analyzer.Analyzer
-	llmClient     llm.Client
-	aiContext     *config.AIContext
-	systemPrompts map[string]string
-	yamlRules     []YAMLGenerationRule
-	httpServer    *http.Server
+	config       Config
+	repo         db.Repository
+	authService  *auth.Service
+	templateEng  *template.Engine
+	policyEng    *policy.Engine
+	moduleReg    *module.Registry
+	workerHub    *workerstream.Hub
+	llmClient    llm.Client
+	agentRuntime *agent.Runtime
+	httpServer   *http.Server
 }
 
 // NewServer creates a new ADP server.
@@ -82,43 +74,21 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 		llmClient = llm.NewHTTPClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel)
 	}
 
-	taskParser := parser.NewParser(llmClient, templateEng, policyEng)
-	planStore := planner.NewPlanStore()
-	dPlanner := planner.New(llmClient, templateEng, planStore)
-	dAnalyzer := analyzer.New(llmClient)
-
 	if authSvc == nil {
 		authSvc = auth.NewService(cfg.AdminUsername, cfg.AdminPassword, cfg.AuthSecret)
 	}
 
-	// Load AI context if configured.
-	var aiCtx *config.AIContext
-	if cfg.AIContextPath != "" {
-		loaded, err := config.LoadAIContext(cfg.AIContextPath)
-		if err != nil {
-			log.Printf("WARNING: failed to load AI context from %s: %v", cfg.AIContextPath, err)
-		} else {
-			aiCtx = loaded
-			taskParser.SetAIContext(aiCtx)
-			log.Printf("loaded AI context from %s", cfg.AIContextPath)
-		}
-	}
-
 	server := &Server{
-		config:        cfg,
-		repo:          repo,
-		authService:   authSvc,
-		templateEng:   templateEng,
-		policyEng:     policyEng,
-		moduleReg:     moduleReg,
-		workerHub:     workerstream.NewHub(),
-		aiContext:     aiCtx,
-		taskParser:    taskParser,
-		planner:       dPlanner,
-		analyzer:      dAnalyzer,
-		llmClient:     llmClient,
-		systemPrompts: make(map[string]string),
+		config:      cfg,
+		repo:        repo,
+		authService: authSvc,
+		templateEng: templateEng,
+		policyEng:   policyEng,
+		moduleReg:   moduleReg,
+		workerHub:   workerstream.NewHub(),
+		llmClient:   llmClient,
 	}
+	server.agentRuntime = agent.New(llmClient, server.agentTools(), cfg.AgentMaxSteps, 0)
 
 	if _, err := server.syncManagedConfigs(cfg.ManagedConfigDir, cfg.ManagedConfigSyncMode == "enforce"); err != nil {
 		log.Printf("WARNING: failed to bootstrap managed configs: %v", err)
@@ -167,11 +137,8 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	mux.HandleFunc("POST /api/v1/workers/register", server.withWorkerAuth(server.handleRegisterWorker))
 	mux.HandleFunc("POST /api/v1/workers/", server.withWorkerAuth(server.handleWorkerActions))
 	mux.HandleFunc("PUT /api/v1/workers/", server.withWorkerAuth(server.handleWorkerActions))
-	// Templates & tasks
-	mux.HandleFunc("GET /api/v1/templates", server.withUserAuth(server.handleListTemplates))
-	mux.HandleFunc("GET /api/v1/tasks", server.withUserAuth(server.handleListTaskJobs))
-	mux.HandleFunc("POST /api/v1/tasks/parse", server.withUserAuth(server.handleParseTask))
-	mux.HandleFunc("POST /api/v1/tasks/run", server.withUserAuth(server.handleRunTask))
+	// Controlled operations agent. The legacy LLM parsing/YAML endpoints were removed.
+	mux.HandleFunc("POST /api/v1/agent/runs", server.withUserAuth(server.handleAgentRun))
 	// Approvals
 	mux.HandleFunc("GET /api/v1/approvals/jobs", server.withUserAuth(server.handleListPendingApprovalJobs))
 	mux.HandleFunc("POST /api/v1/approvals/jobs/", server.withUserAuth(server.handleApproveJob))
@@ -180,17 +147,7 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	// Cases
 	mux.HandleFunc("GET /api/v1/cases", server.withUserAuth(server.handleListIncidentCases))
 	mux.HandleFunc("GET /api/v1/cases/suggestions", server.withUserAuth(server.handleSuggestIncidentCases))
-	// Diagnosis
-	mux.HandleFunc("POST /api/v1/diagnosis/plan", server.withUserAuth(server.handleCreateDiagnosisPlan))
-	mux.HandleFunc("GET /api/v1/diagnosis/plan/", server.withUserAuth(server.handleDiagnosisPlanActions))
-	mux.HandleFunc("POST /api/v1/diagnosis/plan/", server.withUserAuth(server.handleDiagnosisPlanActions))
-	// YAML generation & storage
-	mux.HandleFunc("POST /api/v1/tasks/generate-yaml", server.withUserAuth(server.handleGenerateYAML))
-	mux.HandleFunc("POST /api/v1/yamls", server.withUserAuth(server.handleSaveYAML))
-	mux.HandleFunc("GET /api/v1/yamls", server.withUserAuth(server.handleListYAMLs))
-	mux.HandleFunc("POST /api/v1/yamls/", server.withUserAuth(server.handleYAMLActions))
-	mux.HandleFunc("DELETE /api/v1/yamls/", server.withUserAuth(server.handleYAMLActions))
-	// Runtime managed configs: templates, policies, prompts, diagnosis plans.
+	// Runtime managed configs: modules/templates and policies.
 	mux.HandleFunc("GET /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))
 	mux.HandleFunc("POST /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))
 	mux.HandleFunc("PUT /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))

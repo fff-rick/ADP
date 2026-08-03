@@ -1,113 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ADP Tasks</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body data-page="tasks">
-
-  <div class="ambient-glow"></div>
-
-  <div class="shell" style="position: relative; z-index: 1;">
-    <header class="topbar">
-      <div class="topbar-brand">
-        Tasks<em>Task Console</em>
-      </div>
-
-      <div class="topbar-right">
-        <span class="server-clock" id="clock">--:--:--</span>
-        <a href="/login" class="btn btn-xs btn-primary" id="login-nav-btn" style="display:none;">登录</a>
-        <span class="session-badge" id="session-state">未登录</span>
-        <button id="logout-button" class="btn btn-xs btn-ghost" style="display:none;">退出</button>
-        <button class="theme-toggle" id="theme-toggle" type="button" title="切换主题">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-          </svg>
-        </button>
-      </div>
-    </header>
-
-    <nav class="nav" style="margin-bottom: 28px;">
-      <a class="nav-link" href="/">首页</a>
-            <a class="nav-link" href="/users">用户</a>
-      <a class="nav-link" href="/workers">Workers</a>
-      <a class="nav-link" href="/jobs">Jobs</a>
-      <a class="nav-link is-active" href="/tasks">Tasks</a>
-      <a class="nav-link" href="/configs">配置</a>
-    </nav>
-
-    <main>
-      <!-- Task Console -->
-      <div style="margin-bottom: 28px;" class="scroll-reveal stagger-1">
-        <div class="panel-shell">
-          <div class="panel-core">
-            <div class="panel-heading">
-              <span class="panel-index">控制台</span>
-              <span class="panel-title">Task</span>
-            </div>
-
-            <form id="task-form" class="form-stack" style="margin-bottom: 20px;">
-              <div class="field-group">
-                <label class="field-label" for="task-input">任务描述</label>
-                <textarea class="field-textarea" id="task-input" rows="3" placeholder="例如：每天备份 mysql 数据库"></textarea>
-              </div>
-              <div class="field-group">
-                <label class="field-label" for="task-params">参数 JSON（可选）</label>
-                <textarea class="field-textarea" id="task-params" rows="2" placeholder='例如：{"Database":"demo","ServiceProfile":"mysql_prod"}'></textarea>
-              </div>
-              <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                <button class="btn btn-primary" type="submit" data-action="parse">解析意图</button>
-                <button class="btn btn-secondary" type="submit" data-action="run">运行 Task</button>
-                <button class="btn btn-accent" type="button" onclick="handleGenerateYAML()">生成 YAML</button>
-                <button class="btn btn-xs btn-ghost" id="save-yaml-btn" type="button" onclick="handleSaveGeneratedYAML()" style="display:none;">保存 YAML</button>
-              </div>
-            </form>
-
-            <div class="task-layout">
-              <div>
-                <div style="font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px;">解析 / 执行结果</div>
-                <pre id="task-output" class="code-block" style="min-height: 200px;">等待输入任务。</pre>
-              </div>
-              <div>
-                <div style="font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px;">可用模板</div>
-                <div id="template-list"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Saved YAML Templates -->
-      <div style="margin-bottom: 28px;" class="scroll-reveal stagger-2">
-        <div class="panel-shell">
-          <div class="panel-core">
-            <div class="panel-heading">
-              <span class="panel-index">模板</span>
-              <span class="panel-title">已保存的 YAML</span>
-            </div>
-            <div id="yaml-list"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Recent Tasks -->
-      <div class="scroll-reveal stagger-3">
-        <div class="panel-shell">
-          <div class="panel-core">
-            <div class="panel-heading">
-              <span class="panel-index">最近</span>
-              <span class="panel-title">Task 记录</span>
-            </div>
-            <div id="task-list"></div>
-          </div>
-        </div>
-      </div>
-    </main>
-  </div>
-
-  <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js" defer></script>
-</body>
-</html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ADP Agent</title><link rel="stylesheet" href="/static/app.css"></head>
+<body data-page="tasks"><div class="ambient-glow"></div><div class="shell" style="position:relative;z-index:1;">
+  <header class="topbar"><div class="topbar-brand">Agent<em>Host Operations</em></div><div class="topbar-right"><span class="server-clock" id="clock">--:--:--</span><a href="/login" class="btn btn-xs btn-primary" id="login-nav-btn" style="display:none;">登录</a><span class="session-badge" id="session-state">未登录</span><button id="logout-button" class="btn btn-xs btn-ghost" style="display:none;">退出</button><button class="theme-toggle" id="theme-toggle" type="button" title="切换主题">◐</button></div></header>
+  <nav class="nav" style="margin-bottom:28px;"><a class="nav-link" href="/">首页</a><a class="nav-link" href="/users">用户</a><a class="nav-link" href="/workers">Workers</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link is-active" href="/tasks">Agent</a><a class="nav-link" href="/configs">配置</a></nav>
+  <main>
+    <div class="panel-shell scroll-reveal" style="margin-bottom:28px;"><div class="panel-core"><div class="panel-heading"><span class="panel-index">远程运维</span><span class="panel-title">宿主机 Agent</span><span class="panel-subtitle">仅调用受控 Worker Module</span></div>
+      <form id="task-form" class="form-stack"><div class="field-group"><label class="field-label" for="task-input">请求</label><textarea class="field-textarea" id="task-input" rows="4" placeholder="例如：检查 worker-1 的宿主机资源；若 Nginx 不可用，提出重启 nginx 的修复建议。"></textarea><span style="font-size:.75rem;color:var(--text-tertiary);">Agent 不执行任意 Bash。修复操作将由目标 Worker 在本机执行，并按策略进入人工审批。</span></div><div><button class="btn btn-primary" type="submit">运行 Agent</button></div></form>
+    </div></div>
+    <div class="task-layout scroll-reveal" style="margin-bottom:28px;"><div class="panel-shell"><div class="panel-core"><div class="panel-heading"><span class="panel-index">时间线</span><span class="panel-title">工具调用</span></div><div id="agent-timeline" class="agent-timeline">等待 Agent 请求。</div></div></div><div class="panel-shell"><div class="panel-core"><div class="panel-heading"><span class="panel-index">结论</span><span class="panel-title">Agent 回答</span></div><pre id="task-output" class="code-block" style="min-height:220px;">等待输入请求。</pre></div></div></div>
+    <div class="panel-shell scroll-reveal"><div class="panel-core"><div class="panel-heading"><span class="panel-index">执行</span><span class="panel-title">Agent 创建的任务</span></div><div id="task-list"></div></div></div>
+  </main>
+</div><div id="toast" class="toast" hidden></div><script src="/static/app.js" defer></script></body></html>
