@@ -1200,7 +1200,11 @@ func (r *PostgresRepository) ListConversations() ([]model.Conversation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list conversations: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("close conversation rows: %v", closeErr)
+		}
+	}()
 	var list []model.Conversation
 	for rows.Next() {
 		var c model.Conversation
@@ -1250,7 +1254,11 @@ func (r *PostgresRepository) ListConversationMessages(conversationID string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("list conversation messages: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("close conversation message rows: %v", closeErr)
+		}
+	}()
 	var list []model.ConversationMessage
 	for rows.Next() {
 		var m model.ConversationMessage

@@ -10,15 +10,15 @@ import (
 )
 
 type dashboardSummaryResponse struct {
-	User             model.User            `json:"user"`
-	CurrentTime      string                `json:"current_time"`
-	Metrics          model.MetricsSnapshot `json:"metrics"`
-	RecentJobs       []model.Job           `json:"recent_jobs"`
-	Workers          []model.Worker        `json:"workers"`
-	PendingApprovals []model.Job           `json:"pending_approvals"`
-	RecentCases      []model.IncidentCase  `json:"recent_cases"`
-	RecentAuditLogs  []model.AuditLog      `json:"recent_audit_logs"`
-	TemplatesTotal   int                    `json:"templates_total"`
+	User             model.User              `json:"user"`
+	CurrentTime      string                  `json:"current_time"`
+	Metrics          model.MetricsSnapshot   `json:"metrics"`
+	RecentJobs       []model.Job             `json:"recent_jobs"`
+	Workers          []model.Worker          `json:"workers"`
+	PendingApprovals []model.Job             `json:"pending_approvals"`
+	RecentCases      []model.IncidentCase    `json:"recent_cases"`
+	RecentAuditLogs  []model.AuditLog        `json:"recent_audit_logs"`
+	TemplatesTotal   int                     `json:"templates_total"`
 	Templates        []model.CommandTemplate `json:"templates"`
 }
 

@@ -623,7 +623,6 @@ async function handleTaskSubmit(event) {
     msgEl.scrollTop = msgEl.scrollHeight;
   }
 
-<<<<<<< HEAD
   var indicator = document.getElementById("agent-running-indicator");
   if (indicator) indicator.style.display = "flex";
 
@@ -689,21 +688,6 @@ async function handleTaskSubmit(event) {
       }
       if (msgEl) msgEl.scrollTop = msgEl.scrollHeight;
     }
-=======
-  try {
-    if (elements.taskOutput) elements.taskOutput.textContent = "Agent 正在调用受控工具…";
-    if (elements.agentTimeline) elements.agentTimeline.textContent = "运行中…";
-    var runResult = await authedRequest("/api/v1/agent/runs", {
-      method: "POST",
-      body: JSON.stringify({ input: input }),
-    });
-    if (elements.taskOutput) {
-      elements.taskOutput.textContent = runResult.answer || "Agent 未返回结论。";
-    }
-    renderAgentTimeline(runResult.events || []);
-    showToast("Agent 已完成 " + (runResult.steps || 0) + " 个推理步骤");
-    await refreshTasksPage();
->>>>>>> origin/main
   } catch (error) {
     if (agentContent) agentContent.innerHTML = '<span style="color:var(--danger);">错误: ' + escapeHTML(error.message) + '</span>';
     showToast(error.message);
@@ -1323,12 +1307,8 @@ async function refreshTasksPage() {
   state.user = summary.user;
   updateSessionState(summary.current_time);
 
-<<<<<<< HEAD
   await loadConversations();
   await renderConversationMessages();
-=======
-  var tasks = await authedRequest("/api/v1/jobs?source_type=agent");
->>>>>>> origin/main
 
   var titleEl = document.getElementById("conv-title-text");
   if (titleEl && currentConversationID) {
@@ -1346,11 +1326,7 @@ async function refreshTasksPage() {
       return '<div class="list-card">' +
         '<div style="flex: 1;">' +
           '<strong style="font-size: 0.875rem;">' + escapeHTML(task.name) + '</strong>' +
-<<<<<<< HEAD
           '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(task.template_code || task.source_type || "agent") + '</span>' +
-=======
-          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(task.template_code || "受控 Module") + '</span>' +
->>>>>>> origin/main
         '</div>' +
         '<div class="list-card-meta">' +
           '<span class="status-pill ' + statusClass(task.status) + '"><span class="status-dot"></span>' + escapeHTML(task.status) + '</span>' +
@@ -1513,11 +1489,7 @@ function renderSummaryMetrics(summary) {
     ["在线 Workers", summary.metrics.workers_online, summary.workers.length + " 个已注册"],
     ["Jobs 总数", summary.metrics.jobs_total, summary.metrics.jobs_success + " 成功 / " + summary.metrics.jobs_failed + " 失败"],
     ["待审批", summary.metrics.jobs_waiting_approval, "等待人工确认"],
-<<<<<<< HEAD
     ["受控能力", summary.templates_total, "YAML 模板 (动态加载)"],
-=======
-    ["受控能力", summary.templates_total, "可供 Agent 调用的 Module"],
->>>>>>> origin/main
   ];
 
   elements.metricsGrid.innerHTML = metrics.map(function(m) {

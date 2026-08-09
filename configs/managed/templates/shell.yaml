@@ -5,7 +5,15 @@ templates:
     name: 端口监听检查
     description: 检查端口监听状态。
     tool_type: shell
-    command: ss -tlnp 2>/dev/null | grep :{{.Port}} || netstat -tlnp 2>/dev/null | grep :{{.Port}}
+    command: |
+      if command -v ss >/dev/null 2>&1; then
+        ss -tlnp 2>/dev/null | grep -F -- ":{{.Port}}" || true
+      elif command -v netstat >/dev/null 2>&1; then
+        netstat -tlnp 2>/dev/null | grep -F -- ":{{.Port}}" || true
+      else
+        echo "neither ss nor netstat is available" >&2
+        exit 127
+      fi
     risk_level: low
     parameters:
       - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
@@ -15,7 +23,7 @@ templates:
     name: 进程存活检查
     description: 检查指定进程。
     tool_type: shell
-    command: ps aux | grep -v grep | grep {{.ProcessName}}
+    command: ps aux | grep -v grep | grep -F -- "{{.ProcessName}}" || true
     risk_level: low
     parameters:
       - {name: ServiceProfile, description: Worker 本地服务配置, required: true}

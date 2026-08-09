@@ -725,7 +725,9 @@ func (s *Server) handleAgentRunStream(w http.ResponseWriter, r *http.Request, re
 
 	for ev := range stream {
 		data, _ := json.Marshal(ev)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			break
+		}
 		flusher.Flush()
 	}
 	<-done
