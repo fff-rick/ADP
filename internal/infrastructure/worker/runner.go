@@ -45,7 +45,7 @@ func NewRunner(workerType string) *Runner {
 	}
 }
 
-func (r *Runner) SetExecTimeout(d time.Duration)  { r.execTimeout = d }
+func (r *Runner) SetExecTimeout(d time.Duration) { r.execTimeout = d }
 
 func (r *Runner) SetServicesConfigPath(path string) {
 	if strings.TrimSpace(path) != "" {
