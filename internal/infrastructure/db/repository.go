@@ -83,6 +83,15 @@ type Repository interface {
 	GetManagedConfig(kind, id string) (model.ManagedConfig, error)
 	DeleteManagedConfig(kind, id string) error
 
+	// ── Conversations ──
+
+	CreateConversation(title string) (model.Conversation, error)
+	GetConversation(id string) (model.Conversation, error)
+	ListConversations() ([]model.Conversation, error)
+	DeleteConversation(id string) error
+	AddConversationMessage(msg model.ConversationMessage) error
+	ListConversationMessages(conversationID string) ([]model.ConversationMessage, error)
+
 	// ── Metrics ──
 
 	MetricsSnapshot() (model.MetricsSnapshot, error)

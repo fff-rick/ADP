@@ -259,3 +259,23 @@ type ManagedConfig struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
+
+// Conversation represents an Agent conversation session.
+type Conversation struct {
+	ID        string    `json:"id"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ConversationMessage is a single message in a conversation.
+type ConversationMessage struct {
+	ID             int64          `json:"id"`
+	ConversationID string         `json:"conversation_id"`
+	Role           string         `json:"role"` // user, assistant, tool
+	Content        string         `json:"content"`
+	ToolName       string         `json:"tool_name,omitempty"`
+	ToolData       map[string]any `json:"tool_data,omitempty"`
+	Step           int            `json:"step"`
+	CreatedAt      time.Time      `json:"created_at"`
+}

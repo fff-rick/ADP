@@ -34,6 +34,7 @@ type Config struct {
 	LLMAPIKey             string
 	LLMModel              string
 	AgentMaxSteps         int
+	AgentAllowShell       bool
 	ManagedConfigDir      string
 	ManagedConfigSyncMode string
 }
@@ -137,8 +138,13 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	mux.HandleFunc("POST /api/v1/workers/register", server.withWorkerAuth(server.handleRegisterWorker))
 	mux.HandleFunc("POST /api/v1/workers/", server.withWorkerAuth(server.handleWorkerActions))
 	mux.HandleFunc("PUT /api/v1/workers/", server.withWorkerAuth(server.handleWorkerActions))
-	// Controlled operations agent. The legacy LLM parsing/YAML endpoints were removed.
+	// Controlled operations agent.
 	mux.HandleFunc("POST /api/v1/agent/runs", server.withUserAuth(server.handleAgentRun))
+	// Conversations
+	mux.HandleFunc("GET /api/v1/conversations", server.withUserAuth(server.handleListConversations))
+	mux.HandleFunc("POST /api/v1/conversations", server.withUserAuth(server.handleCreateConversation))
+	mux.HandleFunc("GET /api/v1/conversations/", server.withUserAuth(server.handleConversationActions))
+	mux.HandleFunc("DELETE /api/v1/conversations/", server.withUserAuth(server.handleConversationActions))
 	// Approvals
 	mux.HandleFunc("GET /api/v1/approvals/jobs", server.withUserAuth(server.handleListPendingApprovalJobs))
 	mux.HandleFunc("POST /api/v1/approvals/jobs/", server.withUserAuth(server.handleApproveJob))

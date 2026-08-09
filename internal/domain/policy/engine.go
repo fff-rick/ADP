@@ -7,10 +7,10 @@ import (
 	"adp/internal/domain/model"
 )
 
-// Engine enforces execution policies: tool whitelist, template whitelist,
+// Engine enforces execution policies: tool blocklist, template whitelist,
 // and risk-level based gating.
 type Engine struct {
-	allowedTools       map[string]bool
+	blockedTools       map[string]bool
 	allowedTemplates   map[string]bool
 	highRiskKeywords   []string
 	approvalRiskLevels map[model.RiskLevel]bool
@@ -19,12 +19,12 @@ type Engine struct {
 // NewEngine creates a deny-by-default policy engine. Authorization is supplied
 // exclusively by the active managed policy configuration.
 func NewEngine() *Engine {
-	return &Engine{allowedTools: map[string]bool{}, allowedTemplates: map[string]bool{}, approvalRiskLevels: map[model.RiskLevel]bool{}}
+	return &Engine{blockedTools: map[string]bool{}, allowedTemplates: map[string]bool{}, approvalRiskLevels: map[model.RiskLevel]bool{}}
 }
 
 // Configure replaces runtime policy settings from managed configuration.
-func (e *Engine) Configure(allowedTools, allowedTemplates, highRiskKeywords []string, approvalRiskLevels []model.RiskLevel) {
-	e.allowedTools = stringSet(allowedTools)
+func (e *Engine) Configure(blockedTools, allowedTemplates, highRiskKeywords []string, approvalRiskLevels []model.RiskLevel) {
+	e.blockedTools = stringSet(blockedTools)
 	e.allowedTemplates = stringSet(allowedTemplates)
 	e.highRiskKeywords = highRiskKeywords
 	e.approvalRiskLevels = make(map[model.RiskLevel]bool, len(approvalRiskLevels))
@@ -53,7 +53,8 @@ func (e *Engine) ValidateTemplate(code string) error {
 	return nil
 }
 
-// ValidateCommand checks whether the leading tool in a command is allowed.
+// ValidateCommand checks whether the leading tool in a command is blocked.
+// Returns nil if the tool is NOT in the blocklist.
 func (e *Engine) ValidateCommand(cmd string) error {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
@@ -61,15 +62,25 @@ func (e *Engine) ValidateCommand(cmd string) error {
 	}
 
 	tool := strings.Split(cmd, " ")[0]
-	if !e.allowedTools[tool] {
-		return fmt.Errorf("tool not in whitelist: %s", tool)
+	if e.blockedTools[tool] {
+		return fmt.Errorf("tool is blocked: %s", tool)
 	}
 	return nil
 }
 
+// AssessCommandRisk evaluates risk for a raw shell command by scanning for
+// high-risk keywords. Used for agent-shell mode.
+func (e *Engine) AssessCommandRisk(command string) model.RiskLevel {
+	combined := strings.ToLower(command)
+	for _, kw := range e.highRiskKeywords {
+		if strings.Contains(combined, kw) {
+			return model.RiskLevelHigh
+		}
+	}
+	return model.RiskLevelLow
+}
+
 // AssessRisk returns a risk level for the given intent.
-// High-risk intents (data deletion, service restart, config changes)
-// require human approval before execution.
 func (e *Engine) AssessRisk(intent model.TaskIntent) model.RiskLevel {
 	if intent.RiskLevel == model.RiskLevelHigh {
 		return model.RiskLevelHigh
@@ -107,4 +118,13 @@ func (e *Engine) MergeRisk(levels ...model.RiskLevel) model.RiskLevel {
 
 func (e *Engine) RequiresManualApproval(level model.RiskLevel) bool {
 	return e.approvalRiskLevels[level]
+}
+
+// BlockedTools returns a copy of the blocked tools set for use by workers.
+func (e *Engine) BlockedTools() map[string]bool {
+	out := make(map[string]bool, len(e.blockedTools))
+	for k, v := range e.blockedTools {
+		out[k] = v
+	}
+	return out
 }

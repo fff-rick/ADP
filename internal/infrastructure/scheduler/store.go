@@ -33,6 +33,7 @@ type CreateJobOptions struct {
 	Parameters       map[string]string
 	SourceType       string
 	SourceID         string
+	AssignedWorkerID string
 }
 
 func NewStore() *Store {
@@ -124,6 +125,7 @@ func (s *Store) CreateJobWithOptions(name, workerType, command string, opts Crea
 		Parameters:       cloneStringMap(opts.Parameters),
 		SourceType:       opts.SourceType,
 		SourceID:         opts.SourceID,
+		AssignedWorkerID: opts.AssignedWorkerID,
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -154,6 +156,7 @@ func (s *Store) ListJobs() []model.Job {
 	for _, job := range s.jobs {
 		jobs = append(jobs, job)
 	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].CreatedAt.After(jobs[j].CreatedAt) })
 	return jobs
 }
 

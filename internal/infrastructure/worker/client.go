@@ -320,6 +320,7 @@ func protoJobToModel(job *adpv1.Job) model.Job {
 		Command:      job.GetCommand(),
 		TemplateCode: job.GetTemplateCode(),
 		Parameters:   cloneStringMap(job.GetParameters()),
+		SourceType:   job.GetSourceType(),
 	}
 }
 

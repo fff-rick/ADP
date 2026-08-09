@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"adp/internal/domain/model"
+	"adp/internal/module/builtin"
 )
 
 const (
@@ -46,7 +47,7 @@ type templateParamYAML struct {
 type policyConfigYAML struct {
 	ID                 string   `yaml:"id"`
 	Name               string   `yaml:"name"`
-	AllowedTools       []string `yaml:"allowed_tools"`
+	BlockedTools       []string `yaml:"blocked_tools"`
 	AllowedTemplates   []string `yaml:"allowed_templates"`
 	HighRiskKeywords   []string `yaml:"high_risk_keywords"`
 	ApprovalRiskLevels []string `yaml:"approval_risk_levels"`
@@ -188,6 +189,9 @@ func managedConfigIdentity(kind, raw string) (string, string, error) {
 	return "", "", errors.New("unsupported config kind")
 }
 func (s *Server) reloadManagedConfigs() error {
+	// Clear existing template modules before reloading.
+	builtin.ClearTemplateModules(s.moduleReg)
+
 	cfgs, err := s.repo.ListManagedConfigs("")
 	if err != nil {
 		return err
@@ -212,7 +216,36 @@ func (s *Server) applyManagedConfig(cfg model.ManagedConfig) error {
 		for i, v := range p.ApprovalRiskLevels {
 			levels[i] = model.RiskLevel(v)
 		}
-		s.policyEng.Configure(p.AllowedTools, p.AllowedTemplates, p.HighRiskKeywords, levels)
+		s.policyEng.Configure(p.BlockedTools, p.AllowedTemplates, p.HighRiskKeywords, levels)
+	case configKindTemplate:
+		var group templateGroupConfigYAML
+		if err := yaml.Unmarshal([]byte(cfg.YAMLContent), &group); err != nil {
+			return err
+		}
+		for _, t := range group.Templates {
+			s.moduleReg.Register(newTemplateModuleFromYAML(t))
+		}
 	}
 	return nil
+}
+
+func newTemplateModuleFromYAML(t templateConfigYAML) *builtin.TemplateModule {
+	params := make([]model.TemplateParam, len(t.Parameters))
+	for i, p := range t.Parameters {
+		params[i] = model.TemplateParam{
+			Name:        p.Name,
+			Description: p.Description,
+			Required:    p.Required,
+			Default:     p.Default,
+		}
+	}
+	return builtin.NewTemplateModule(model.CommandTemplate{
+		Code:        t.Code,
+		Name:        t.Name,
+		Description: t.Description,
+		ToolType:    t.ToolType,
+		Command:     t.Command,
+		RiskLevel:   t.RiskLevel,
+		Parameters:  params,
+	})
 }

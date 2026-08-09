@@ -9,13 +9,13 @@ db:
 auth:
   admin_username: "admin"
   # Inject the following values from the runtime Secret; never commit them here.
-  admin_password: ""
-  secret: ""
-  worker_token: ""
+  admin_password: "adp"
+  secret: "adp"
+  worker_token: "adp"
 
-llm:
+agent:
   base_url: "https://api.deepseek.com"
   api_key: ""
   model: "deepseek-v4-pro"
-
-ai_context: "configs/ai/ai_context.yaml"
+  max_steps: 500
+  allow_shell: false

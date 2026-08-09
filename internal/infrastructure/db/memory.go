@@ -2,6 +2,9 @@ package db
 
 import (
 	"fmt"
+	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"adp/internal/domain/model"
@@ -13,6 +16,11 @@ import (
 type MemoryRepository struct {
 	store          *scheduler.Store
 	managedConfigs map[string]model.ManagedConfig
+	convMu         sync.RWMutex
+	conversations  map[string]model.Conversation
+	messages       map[string][]model.ConversationMessage // keyed by conversationID
+	convIDSeq      atomic.Uint64
+	convMsgIDSeq   atomic.Int64
 }
 
 // NewMemoryRepository creates a new in-memory repository.
@@ -20,6 +28,8 @@ func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
 		store:          scheduler.NewStore(),
 		managedConfigs: make(map[string]model.ManagedConfig),
+		conversations:  make(map[string]model.Conversation),
+		messages:       make(map[string][]model.ConversationMessage),
 	}
 }
 
@@ -124,6 +134,7 @@ func (r *MemoryRepository) CreateJob(job model.Job) (model.Job, error) {
 		Parameters:       cloneStringMap(job.Parameters),
 		SourceType:       job.SourceType,
 		SourceID:         job.SourceID,
+		AssignedWorkerID: job.AssignedWorkerID,
 	}
 	result := r.store.CreateJobWithOptions(job.Name, job.WorkerType, job.Command, opts)
 	return result, nil
@@ -347,6 +358,74 @@ type repoError struct {
 }
 
 func (e *repoError) Error() string { return e.msg }
+
+// ── Conversations ──
+
+func (r *MemoryRepository) CreateConversation(title string) (model.Conversation, error) {
+	r.convMu.Lock()
+	defer r.convMu.Unlock()
+	now := time.Now()
+	id := fmt.Sprintf("conv-%06d", r.convIDSeq.Add(1))
+	c := model.Conversation{ID: id, Title: title, CreatedAt: now, UpdatedAt: now}
+	r.conversations[id] = c
+	r.messages[id] = nil
+	return c, nil
+}
+
+func (r *MemoryRepository) GetConversation(id string) (model.Conversation, error) {
+	r.convMu.RLock()
+	defer r.convMu.RUnlock()
+	c, ok := r.conversations[id]
+	if !ok {
+		return model.Conversation{}, fmt.Errorf("conversation not found: %s", id)
+	}
+	return c, nil
+}
+
+func (r *MemoryRepository) ListConversations() ([]model.Conversation, error) {
+	r.convMu.RLock()
+	defer r.convMu.RUnlock()
+	list := make([]model.Conversation, 0, len(r.conversations))
+	for _, c := range r.conversations {
+		list = append(list, c)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].UpdatedAt.After(list[j].UpdatedAt) })
+	return list, nil
+}
+
+func (r *MemoryRepository) DeleteConversation(id string) error {
+	r.convMu.Lock()
+	defer r.convMu.Unlock()
+	if _, ok := r.conversations[id]; !ok {
+		return fmt.Errorf("conversation not found: %s", id)
+	}
+	delete(r.conversations, id)
+	delete(r.messages, id)
+	return nil
+}
+
+func (r *MemoryRepository) AddConversationMessage(msg model.ConversationMessage) error {
+	r.convMu.Lock()
+	defer r.convMu.Unlock()
+	msg.ID = r.convMsgIDSeq.Add(1)
+	msg.CreatedAt = time.Now()
+	r.messages[msg.ConversationID] = append(r.messages[msg.ConversationID], msg)
+	if c, ok := r.conversations[msg.ConversationID]; ok {
+		c.UpdatedAt = time.Now()
+		r.conversations[msg.ConversationID] = c
+	}
+	return nil
+}
+
+func (r *MemoryRepository) ListConversationMessages(conversationID string) ([]model.ConversationMessage, error) {
+	r.convMu.RLock()
+	defer r.convMu.RUnlock()
+	msgs := r.messages[conversationID]
+	if msgs == nil {
+		return []model.ConversationMessage{}, nil
+	}
+	return msgs, nil
+}
 
 func cloneStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {

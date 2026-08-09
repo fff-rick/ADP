@@ -91,6 +91,13 @@ func (r *Registry) Register(m Module) {
 	r.modules[m.Code()] = m
 }
 
+// Clear removes all modules from the registry.
+func (r *Registry) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.modules = make(map[string]Module)
+}
+
 // Get returns a module by code.
 func (r *Registry) Get(code string) (Module, error) {
 	r.mu.RLock()

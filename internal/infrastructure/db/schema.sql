@@ -147,3 +147,23 @@ CREATE INDEX IF NOT EXISTS idx_incident_cases_fault ON incident_cases(fault_type
 CREATE INDEX IF NOT EXISTS idx_worker_logs_worker ON worker_logs(worker_id);
 CREATE INDEX IF NOT EXISTS idx_worker_logs_job ON worker_logs(job_id);
 CREATE INDEX IF NOT EXISTS idx_managed_configs_kind ON managed_configs(kind);
+
+-- 对话表
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tool_name TEXT DEFAULT '',
+    tool_data JSONB DEFAULT '{}',
+    step INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_conv_msgs_cid ON conversation_messages(conversation_id, id);

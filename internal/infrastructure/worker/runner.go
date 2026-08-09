@@ -5,14 +5,25 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"adp/internal/config"
 	"adp/internal/domain/model"
-	"adp/internal/module"
-	"adp/internal/module/builtin"
 )
+
+// Default blocked tools — commands starting with these are never executed directly
+// by the Worker. Template-based jobs bypass this check; only agent_shell jobs are
+// subject to the blocklist.
+var defaultBlockedTools = map[string]bool{
+	"rm": true, "dd": true, "mkfs": true, "fdisk": true,
+	"shutdown": true, "reboot": true, "halt": true, "poweroff": true,
+	"kill": true, "killall": true, "pkill": true,
+	"chmod": true, "chown": true, "passwd": true,
+	"useradd": true, "userdel": true, "groupadd": true,
+	"iptables": true, "ip6tables": true,
+}
 
 // Runner is the unprivileged execution half of a worker. It has no transport
 // or server credentials: the Agent owns registration, heartbeats and result
@@ -20,17 +31,17 @@ import (
 type Runner struct {
 	workerType        string
 	execTimeout       time.Duration
-	moduleReg         *module.Registry
 	serviceConfigPath string
 	serviceCatalog    *config.ServiceCatalog
+	blockedTools      map[string]bool
 }
 
 func NewRunner(workerType string) *Runner {
 	return &Runner{
 		workerType:        workerType,
 		execTimeout:       30 * time.Second,
-		moduleReg:         builtin.NewRegistry(),
 		serviceConfigPath: config.DefaultServicesConfigPath,
+		blockedTools:      defaultBlockedTools,
 	}
 }
 
@@ -39,6 +50,13 @@ func (r *Runner) SetExecTimeout(d time.Duration) { r.execTimeout = d }
 func (r *Runner) SetServicesConfigPath(path string) {
 	if strings.TrimSpace(path) != "" {
 		r.serviceConfigPath = path
+	}
+}
+
+// SetBlockedTools overrides the default blocked-tools list.
+func (r *Runner) SetBlockedTools(blocked map[string]bool) {
+	if blocked != nil {
+		r.blockedTools = blocked
 	}
 }
 
@@ -56,21 +74,22 @@ func (r *Runner) Execute(job model.Job, workerID string) (bool, string) {
 		log.Printf("[worker:%s][job:%s] 拒绝执行: %v", workerID, job.ID, err)
 		return false, "authorization denied: " + err.Error()
 	}
-	mod, _ := r.moduleReg.Get(job.TemplateCode)
-	params, service, err := r.resolveServiceProfile(job.TemplateCode, job.Parameters)
+
+	cmd := strings.TrimSpace(job.Command)
+	if cmd == "" {
+		return false, "job has no command to execute"
+	}
+
+	// Resolve ServiceProfile parameters if present.
+	params, _, err := r.resolveServiceProfile(job.Parameters)
 	if err != nil {
 		return false, fmt.Sprintf("service profile: %v", err)
 	}
-	ctx := module.ExecContext{Params: params, WorkerInfo: CollectHostInfo(), Timeout: r.execTimeout, Service: service}
-	cr, checkErr := mod.Check(ctx)
-	if checkErr == nil && !cr.NeedsChange {
-		return true, cr.CurrentState
-	}
-	result, execErr := mod.Execute(ctx)
-	if execErr != nil {
-		return false, fmt.Sprintf("%s\nerror: %v", result.Output, execErr)
-	}
-	return result.Success, result.Output
+
+	// Substitute any remaining {{.Param}} references with resolved values.
+	cmd = r.substituteParams(cmd, params)
+
+	return r.executeShellCommand(cmd)
 }
 
 func (r *Runner) Authorize(job model.Job) error {
@@ -78,62 +97,107 @@ func (r *Runner) Authorize(job model.Job) error {
 	if !model.WorkerCanRunType(workerType, job.WorkerType) {
 		return fmt.Errorf("worker type %q cannot run job type %q", r.workerType, job.WorkerType)
 	}
-	if strings.TrimSpace(job.TemplateCode) == "" {
-		return fmt.Errorf("raw commands are not accepted; a registered module is required")
+
+	if strings.TrimSpace(job.Command) == "" {
+		return fmt.Errorf("job has no command to execute")
 	}
-	if workerType != "shell" && model.NormalizeWorkerType(job.Parameters["ServiceType"]) != workerType {
-		return fmt.Errorf("typed worker %q requires ServiceType=%q", workerType, workerType)
+
+	// Template-based jobs (agent, template, yaml_job, manual_job) are
+	// pre-authorized — the template itself was reviewed and approved.
+	if job.SourceType == "agent" || job.SourceType == "template" ||
+		job.SourceType == "yaml_job" || job.SourceType == "manual_job" ||
+		job.SourceType == "manual_dispatch" {
+		return nil
 	}
-	mod, err := r.moduleReg.Get(job.TemplateCode)
-	if err != nil {
-		return fmt.Errorf("template %q is not an allowed module for typed workers", job.TemplateCode)
+
+	// agent_shell: Agent-crafted commands — blocklist check.
+	if job.SourceType == "agent_shell" {
+		tool := strings.Split(strings.TrimSpace(job.Command), " ")[0]
+		if r.blockedTools[tool] {
+			return fmt.Errorf("blocked tool: %s", tool)
+		}
+		return nil
 	}
-	if model.NormalizeWorkerType(mod.ToolType()) != workerType {
-		return fmt.Errorf("template %q belongs to worker type %q, not %q", job.TemplateCode, mod.ToolType(), workerType)
-	}
-	return nil
+
+	return fmt.Errorf("unknown job source type: %s", job.SourceType)
 }
 
-func (r *Runner) resolveServiceProfile(templateCode string, source map[string]string) (map[string]string, *config.RuntimeServiceProfile, error) {
-	params := cloneStringMap(source)
-	name := strings.TrimSpace(params["ServiceProfile"])
+func (r *Runner) executeShellCommand(cmd string) (bool, string) {
+	c := exec.Command("sh", "-c", cmd)
+	var out strings.Builder
+	c.Stdout = &out
+	c.Stderr = &out
+
+	if err := c.Start(); err != nil {
+		return false, err.Error()
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+
+	select {
+	case err := <-done:
+		output := out.String()
+		if err != nil {
+			return false, output
+		}
+		return c.ProcessState.ExitCode() == 0, output
+	case <-time.After(r.execTimeout):
+		_ = c.Process.Kill()
+		return false, "command timed out after " + r.execTimeout.String()
+	}
+}
+
+func (r *Runner) resolveServiceProfile(params map[string]string) (map[string]string, *config.RuntimeServiceProfile, error) {
+	p := cloneStringMap(params)
+	name := strings.TrimSpace(p["ServiceProfile"])
 	if name == "" {
-		return params, nil, nil
+		return p, nil, nil
 	}
 	if r.serviceCatalog == nil {
 		return nil, nil, fmt.Errorf("services config is not loaded")
 	}
-	serviceType := strings.ToLower(strings.TrimSpace(params["ServiceType"]))
+	serviceType := strings.ToLower(strings.TrimSpace(p["ServiceType"]))
 	if serviceType == "" {
-		return nil, nil, fmt.Errorf("template %q requires ServiceType when ServiceProfile is set", templateCode)
+		return nil, nil, fmt.Errorf("ServiceType is required when ServiceProfile is set")
 	}
 	profile, err := r.serviceCatalog.Resolve(name, serviceType)
 	if err != nil {
 		return nil, nil, err
 	}
 	if profile.Host != "" {
-		params["Host"] = profile.Host
+		p["Host"] = profile.Host
 	}
 	if profile.Port != "" {
-		params["Port"] = profile.Port
+		p["Port"] = profile.Port
 	}
 	if profile.User != "" {
-		params["User"] = profile.User
+		p["User"] = profile.User
 	}
 	if profile.URL != "" {
-		params["URL"] = profile.URL
+		p["URL"] = profile.URL
 	}
 	if profile.Process != "" {
-		params["Process"], params["ProcessName"] = profile.Process, profile.Process
+		p["Process"] = profile.Process
+		p["ProcessName"] = profile.Process
 	}
 	if profile.LogFile != "" {
-		params["LogFile"] = profile.LogFile
+		p["LogFile"] = profile.LogFile
 	}
-	return params, &profile, nil
+	if profile.Unit != "" {
+		p["Unit"] = profile.Unit
+	}
+	return p, &profile, nil
 }
 
-// CollectHostInfo is shared runtime data produced by the Runner, not the
-// transport agent. This keeps the Agent independent of host probing details.
+func (r *Runner) substituteParams(cmd string, params map[string]string) string {
+	for k, v := range params {
+		cmd = strings.ReplaceAll(cmd, "{{."+k+"}}", v)
+	}
+	return cmd
+}
+
+// CollectHostInfo gathers host-level information for heartbeats.
 func CollectHostInfo() model.HostInfo {
 	info := model.HostInfo{}
 	if hostname, err := os.Hostname(); err == nil {

@@ -56,6 +56,15 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Auto-dispatch if the Agent already assigned a worker.
+		if *req.Approved && job.AssignedWorkerID != "" {
+			dispatched, derr := s.dispatchJobToWorker(job.ID, job.AssignedWorkerID)
+			if derr == nil {
+				s.workerHub.PushJob(job.AssignedWorkerID, dispatched)
+				job = dispatched
+			}
+		}
+
 		action := "job.approval.rejected"
 		if *req.Approved {
 			action = "job.approval.approved"

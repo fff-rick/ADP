@@ -12,3 +12,6 @@ data:
   ADP_LLM_BASE_URL: "https://api.deepseek.com"
   ADP_LLM_MODEL: "deepseek-v4-pro"
   ADP_AI_CONTEXT: "/etc/adp/ai/ai_context.yaml"
+  # Managed templates and policies are versioned with the Server image.
+  ADP_MANAGED_CONFIG_DIR: "/configs/managed"
+  ADP_MANAGED_CONFIG_SYNC_MODE: "enforce"
