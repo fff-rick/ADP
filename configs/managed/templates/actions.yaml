@@ -1,0 +1,31 @@
+id: actions
+name: Service actions
+templates:
+  - code: restart_service
+    name: 服务重启
+    description: 重启指定的 systemd 服务。需要人工审批。
+    tool_type: shell
+    command: systemctl restart {{.Unit}}
+    risk_level: medium
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: shell}
+      - {name: Unit, description: systemd unit 名称, required: true}
+  - code: service_status
+    name: 服务状态查询
+    description: 查询 systemd 服务状态。
+    tool_type: shell
+    command: systemctl status {{.Unit}} --no-pager
+    risk_level: low
+    parameters:
+      - {name: Unit, description: systemd unit 名称, required: true}
+  - code: reload_service
+    name: 服务重载
+    description: 重载服务配置（不中断服务）。需要人工审批。
+    tool_type: shell
+    command: systemctl reload {{.Unit}}
+    risk_level: medium
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: shell}
+      - {name: Unit, description: systemd unit 名称, required: true}

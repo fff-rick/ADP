@@ -91,6 +91,7 @@ func jobToProto(job model.Job) *adpv1.Job {
 		Command:      job.Command,
 		TemplateCode: job.TemplateCode,
 		Parameters:   cloneStringMap(job.Parameters),
+		SourceType:   job.SourceType,
 	}
 }
 

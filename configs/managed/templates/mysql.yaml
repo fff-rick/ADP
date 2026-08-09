@@ -12,3 +12,13 @@ templates:
       - {name: ServiceType, description: 服务类型, required: true, default: mysql}
       - {name: Database, description: 数据库名, required: true}
       - {name: OutputFile, description: 输出文件, required: false, default: /tmp/backup.sql}
+  - code: mysql_query
+    name: MySQL 查询
+    description: 在 MySQL 上执行只读 SQL 查询。
+    tool_type: mysql
+    command: mysql -h {{.Host}} -P {{.Port}} -u {{.User}} -e "{{.Query}}"
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: mysql}
+      - {name: Query, description: SQL 查询语句, required: true}

@@ -60,7 +60,8 @@ func init() {
 	serveCmd.Flags().String("agent-base-url", "", "Agent model API base URL")
 	serveCmd.Flags().String("agent-api-key", "", "Agent model API key")
 	serveCmd.Flags().String("agent-model", "", "Agent model name")
-	serveCmd.Flags().Int("agent-max-steps", 12, "Maximum tool-calling steps per Agent run")
+	serveCmd.Flags().Int("agent-max-steps", 20, "Maximum tool-calling steps per Agent run")
+	serveCmd.Flags().Bool("agent-allow-shell", false, "Allow Agent to execute shell commands directly (high-risk mode)")
 	serveCmd.Flags().String("managed-config-dir", "configs/managed", "Source-controlled managed YAML configuration directory")
 	serveCmd.Flags().String("managed-config-sync-mode", "missing", "Managed config sync mode: missing or enforce")
 	serveCmd.Flags().String("config", "", "Path to YAML config file")
@@ -78,6 +79,7 @@ func init() {
 	_ = viper.BindPFlag("agent.api_key", serveCmd.Flags().Lookup("agent-api-key"))
 	_ = viper.BindPFlag("agent.model", serveCmd.Flags().Lookup("agent-model"))
 	_ = viper.BindPFlag("agent.max_steps", serveCmd.Flags().Lookup("agent-max-steps"))
+	_ = viper.BindPFlag("agent.allow_shell", serveCmd.Flags().Lookup("agent-allow-shell"))
 	_ = viper.BindPFlag("managed_config_dir", serveCmd.Flags().Lookup("managed-config-dir"))
 	_ = viper.BindPFlag("managed_config_sync_mode", serveCmd.Flags().Lookup("managed-config-sync-mode"))
 
@@ -201,6 +203,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLMAPIKey:             viper.GetString("agent.api_key"),
 		LLMModel:              viper.GetString("agent.model"),
 		AgentMaxSteps:         viper.GetInt("agent.max_steps"),
+		AgentAllowShell:       viper.GetBool("agent.allow_shell"),
 		ManagedConfigDir:      viper.GetString("managed_config_dir"),
 		ManagedConfigSyncMode: viper.GetString("managed_config_sync_mode"),
 	}
@@ -243,6 +246,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLMAPIKey:             cfg.LLMAPIKey,
 		LLMModel:              cfg.LLMModel,
 		AgentMaxSteps:         cfg.AgentMaxSteps,
+		AgentAllowShell:       cfg.AgentAllowShell,
 		ManagedConfigDir:      cfg.ManagedConfigDir,
 		ManagedConfigSyncMode: cfg.ManagedConfigSyncMode,
 	}, repo, authService)
@@ -262,7 +266,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}()
 	go func() {
 		log.Printf("ADP worker gRPC listening on %s", cfg.WorkerGRPCAddr)
-		if err := grpcServer.Serve(grpcListener); err != nil {
+		if err := grpcServer.Serve(grpcListener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			log.Fatalf("worker grpc start failed: %v", err)
 		}
 	}()
@@ -281,13 +285,35 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Close the database.
+	// Worker streams are long-lived, so GracefulStop alone can wait forever.
+	// Give in-flight messages a bounded grace period, then force-close any
+	// remaining streams before releasing the repository.
+	stopGRPCServer(grpcServer, 5*time.Second)
+
+	err = svr.Shutdown(ctx)
 	if closer, ok := repo.(interface{ Close() error }); ok {
 		_ = closer.Close()
 	}
+	return err
+}
 
-	grpcServer.GracefulStop()
-	return svr.Shutdown(ctx)
+func stopGRPCServer(server *grpc.Server, timeout time.Duration) {
+	stopped := make(chan struct{})
+	go func() {
+		server.GracefulStop()
+		close(stopped)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-stopped:
+		return
+	case <-timer.C:
+		log.Printf("worker gRPC graceful shutdown timed out after %s; closing active worker streams", timeout)
+		server.Stop()
+		<-stopped
+	}
 }
 
 func validateRuntimeConfig(cfg config.ServerConfig) error {

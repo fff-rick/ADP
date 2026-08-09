@@ -18,7 +18,8 @@ type dashboardSummaryResponse struct {
 	PendingApprovals []model.Job           `json:"pending_approvals"`
 	RecentCases      []model.IncidentCase  `json:"recent_cases"`
 	RecentAuditLogs  []model.AuditLog      `json:"recent_audit_logs"`
-	TemplatesTotal   int                   `json:"templates_total"`
+	TemplatesTotal   int                    `json:"templates_total"`
+	Templates        []model.CommandTemplate `json:"templates"`
 }
 
 func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +75,7 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 		RecentCases:      cases,
 		RecentAuditLogs:  logs,
 		TemplatesTotal:   len(s.templateEng.ListTemplates()),
+		Templates:        s.templateEng.ListTemplates(),
 	})
 }
 

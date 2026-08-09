@@ -51,7 +51,7 @@ type HTTPClient struct {
 }
 
 func NewHTTPClient(baseURL, apiKey, model string) *HTTPClient {
-	return &HTTPClient{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, model: model, http: &http.Client{Timeout: 30 * time.Second}}
+	return &HTTPClient{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, model: model, http: &http.Client{Timeout: 120 * time.Second}}
 }
 
 func (c *HTTPClient) Complete(ctx context.Context, in CompletionRequest) (Completion, error) {

@@ -35,9 +35,10 @@ func TestExecuteJobPassesJobParametersToModule(t *testing.T) {
 	client := NewClient(server.URL, "worker-secret", "worker-1", "shell", time.Second)
 	client.registeredID = "worker-1"
 	client.executeJob(model.Job{
-		ID:           "job-1",
-		WorkerType:   "shell",
-		TemplateCode: "check_process",
+		ID:         "job-1",
+		WorkerType: "shell",
+		Command:    "ps aux | grep " + procName,
+		SourceType: "agent",
 		Parameters: map[string]string{
 			"ProcessName": procName,
 		},
@@ -61,7 +62,7 @@ func TestTypedWorkerAuthorization(t *testing.T) {
 	}{
 		{
 			name: "matching mysql module",
-			job:  model.Job{WorkerType: "mysql", TemplateCode: "mysql_backup", Parameters: map[string]string{"ServiceType": "mysql"}},
+			job:  model.Job{WorkerType: "mysql", Command: "mysqldump test > /tmp/backup.sql", TemplateCode: "mysql_backup", SourceType: "agent", Parameters: map[string]string{"ServiceType": "mysql"}},
 			want: true,
 		},
 		{

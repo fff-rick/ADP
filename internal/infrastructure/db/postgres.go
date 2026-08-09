@@ -1165,3 +1165,106 @@ func tokenizeSearch(input string) []string {
 	}
 	return tokens
 }
+
+// ── Conversations ──
+
+func (r *PostgresRepository) CreateConversation(title string) (model.Conversation, error) {
+	id := r.genID("conv")
+	now := time.Now()
+	_, err := r.db.Exec(
+		`INSERT INTO conversations (id, title, created_at, updated_at) VALUES ($1, $2, $3, $4)`,
+		id, title, now, now,
+	)
+	if err != nil {
+		return model.Conversation{}, fmt.Errorf("create conversation: %w", err)
+	}
+	return model.Conversation{ID: id, Title: title, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+func (r *PostgresRepository) GetConversation(id string) (model.Conversation, error) {
+	var c model.Conversation
+	err := r.db.QueryRow(
+		`SELECT id, title, created_at, updated_at FROM conversations WHERE id = $1`, id,
+	).Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return model.Conversation{}, fmt.Errorf("conversation not found: %s", id)
+	}
+	if err != nil {
+		return model.Conversation{}, fmt.Errorf("get conversation: %w", err)
+	}
+	return c, nil
+}
+
+func (r *PostgresRepository) ListConversations() ([]model.Conversation, error) {
+	rows, err := r.db.Query(`SELECT id, title, created_at, updated_at FROM conversations ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations: %w", err)
+	}
+	defer rows.Close()
+	var list []model.Conversation
+	for rows.Next() {
+		var c model.Conversation
+		if err := rows.Scan(&c.ID, &c.Title, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	if list == nil {
+		list = []model.Conversation{}
+	}
+	return list, rows.Err()
+}
+
+func (r *PostgresRepository) DeleteConversation(id string) error {
+	result, err := r.db.Exec(`DELETE FROM conversations WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete conversation: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("conversation not found: %s", id)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) AddConversationMessage(msg model.ConversationMessage) error {
+	toolDataJSON, _ := json.Marshal(msg.ToolData)
+	_, err := r.db.Exec(
+		`INSERT INTO conversation_messages (conversation_id, role, content, tool_name, tool_data, step)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		msg.ConversationID, msg.Role, msg.Content, msg.ToolName, toolDataJSON, msg.Step,
+	)
+	if err != nil {
+		return fmt.Errorf("add conversation message: %w", err)
+	}
+	// Touch conversation updated_at.
+	_, _ = r.db.Exec(`UPDATE conversations SET updated_at = $1 WHERE id = $2`, time.Now(), msg.ConversationID)
+	return nil
+}
+
+func (r *PostgresRepository) ListConversationMessages(conversationID string) ([]model.ConversationMessage, error) {
+	rows, err := r.db.Query(
+		`SELECT id, conversation_id, role, content, tool_name, tool_data, step, created_at
+		 FROM conversation_messages WHERE conversation_id = $1 ORDER BY id ASC`, conversationID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list conversation messages: %w", err)
+	}
+	defer rows.Close()
+	var list []model.ConversationMessage
+	for rows.Next() {
+		var m model.ConversationMessage
+		var toolDataJSON []byte
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ToolName, &toolDataJSON, &m.Step, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		if len(toolDataJSON) > 0 {
+			_ = json.Unmarshal(toolDataJSON, &m.ToolData)
+		}
+		list = append(list, m)
+	}
+	if list == nil {
+		list = []model.ConversationMessage{}
+	}
+	return list, rows.Err()
+}

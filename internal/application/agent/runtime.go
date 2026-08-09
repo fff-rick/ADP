@@ -11,7 +11,27 @@ import (
 	"adp/internal/infrastructure/llm"
 )
 
-const SystemPrompt = `You are ADP, a controlled operations agent. Use tools to inspect facts and create only registered module operations. Never invent results, commands, YAML, credentials, or approvals. Perform one operation at a time, observe its result, then decide the next step. Finish with a concise evidence-based answer.`
+const SystemPrompt = `You are ADP, a controlled operations agent for infrastructure diagnostics and repair.
+
+## Rules
+1. Always use list_workers FIRST to discover available Workers. Never guess worker IDs.
+2. Use list_capabilities to see what operations are available for each worker type.
+3. Prefer registered modules (create_module_operation). Use execute_shell_command only when no module fits.
+4. Never invent worker IDs, commands, YAML, credentials, or skip approvals.
+5. Observe each tool result before deciding the next step.
+6. Be concise. Summarize findings, don't repeat raw JSON.
+
+## Failure handling
+- If a command fails due to permissions (polkit, EACCES, "permission denied"), do NOT retry with variations like sudo or alternative syntax. Tell the user what failed and suggest they configure sudoers on the Worker.
+- After 2 consecutive failures for the same goal, STOP and tell the user. Do not keep retrying.
+- Before running a risky command, first check if a simpler read-only diagnostic can confirm the state.
+
+## Workflow
+1. list_workers → discover targets
+2. get_worker_facts → check host state
+3. create_module_operation or execute_shell_command → act
+4. get_job_result → verify
+5. Answer concisely with evidence.`
 
 type Tool interface {
 	Definition() llm.ToolDefinition
@@ -39,7 +59,7 @@ type Runtime struct {
 
 func New(client llm.Client, tools []Tool, maxSteps int, timeout time.Duration) *Runtime {
 	if maxSteps <= 0 {
-		maxSteps = 12
+		maxSteps = 20
 	}
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
@@ -51,7 +71,13 @@ func New(client llm.Client, tools []Tool, maxSteps int, timeout time.Duration) *
 	return &Runtime{client: client, tools: registered, maxSteps: maxSteps, timeout: timeout}
 }
 
-func (r *Runtime) Run(ctx context.Context, input string) (Result, error) {
+func (r *Runtime) Run(ctx context.Context, input string, history []llm.Message) (Result, error) {
+	return r.RunStreaming(ctx, input, history, nil)
+}
+
+// RunStreaming runs the agent loop and emits events to the channel as they happen.
+// Pass nil for stream to disable streaming (same as Run).
+func (r *Runtime) RunStreaming(ctx context.Context, input string, history []llm.Message, stream chan<- Event) (Result, error) {
 	if r.client == nil {
 		return Result{}, fmt.Errorf("agent model is not configured")
 	}
@@ -64,7 +90,9 @@ func (r *Runtime) Run(ctx context.Context, input string) (Result, error) {
 	for _, tool := range r.tools {
 		definitions = append(definitions, tool.Definition())
 	}
-	messages := []llm.Message{{Role: "system", Content: SystemPrompt}, {Role: "user", Content: input}}
+	messages := []llm.Message{{Role: "system", Content: SystemPrompt}}
+	messages = append(messages, history...)
+	messages = append(messages, llm.Message{Role: "user", Content: input})
 	result := Result{}
 	for step := 1; step <= r.maxSteps; step++ {
 		completion, err := r.client.Complete(ctx, llm.CompletionRequest{Messages: messages, Tools: definitions})
@@ -73,7 +101,14 @@ func (r *Runtime) Run(ctx context.Context, input string) (Result, error) {
 		}
 		result.Steps = step
 		messages = append(messages, completion.Message)
-		result.Events = append(result.Events, Event{Step: step, Type: "assistant", Data: completion.Message.Content})
+		ev := Event{Step: step, Type: "assistant", Data: completion.Message.Content}
+		result.Events = append(result.Events, ev)
+		if stream != nil {
+			select {
+			case stream <- ev:
+			default:
+			}
+		}
 		if len(completion.Message.ToolCalls) == 0 {
 			result.Answer = completion.Message.Content
 			return result, nil
@@ -90,7 +125,14 @@ func (r *Runtime) Run(ctx context.Context, input string) (Result, error) {
 			}
 			encoded, _ := json.Marshal(payload)
 			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Content: string(encoded)})
-			result.Events = append(result.Events, Event{Step: step, Type: "tool", Name: call.Name, Data: payload})
+			tev := Event{Step: step, Type: "tool", Name: call.Name, Data: payload}
+			result.Events = append(result.Events, tev)
+			if stream != nil {
+				select {
+				case stream <- tev:
+				default:
+				}
+			}
 		}
 	}
 	return result, fmt.Errorf("agent exceeded maximum of %d steps", r.maxSteps)

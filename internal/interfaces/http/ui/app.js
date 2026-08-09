@@ -3,6 +3,7 @@ const state = {
   user: null,
   toastTimer: null,
   refreshTimer: null,
+  refreshInFlight: false,
 };
 
 const page = document.body.dataset.page || "home";
@@ -52,7 +53,7 @@ function boot() {
   initScrollReveal();
   if (state.token) {
     refreshCurrentPage();
-    state.refreshTimer = window.setInterval(refreshCurrentPage, 15000);
+    startJobsAutoRefresh();
   }
 }
 
@@ -111,7 +112,11 @@ function bindCommonEvents() {
   elements.configRefresh && elements.configRefresh.addEventListener("click", refreshConfigsPage);
   elements.configList && elements.configList.addEventListener("click", handleConfigListAction);
   elements.approvalList && elements.approvalList.addEventListener("click", handleApprovalAction);
+  var conversationMessages = document.getElementById("conversation-messages");
+  conversationMessages && conversationMessages.addEventListener("click", handleConversationAction);
   elements.themeToggle && elements.themeToggle.addEventListener("click", toggleTheme);
+  var templateSel = document.getElementById("job-template");
+  if (templateSel) templateSel.addEventListener("change", onTemplateChange);
 }
 
 /* ── Clock ── */
@@ -149,16 +154,13 @@ async function handleLogin(event) {
     }
     showToast("已登录");
 
-    if (!state.refreshTimer) {
-      state.refreshTimer = window.setInterval(refreshCurrentPage, 15000);
-    }
-
     if (page === "login") {
       window.location.href = "/";
       return;
     }
 
     await refreshCurrentPage();
+    startJobsAutoRefresh();
   } catch (error) {
     if (elements.loginMessage) {
       elements.loginMessage.textContent = error.message;
@@ -175,6 +177,7 @@ function handleLogout() {
     window.clearInterval(state.refreshTimer);
     state.refreshTimer = null;
   }
+  state.refreshInFlight = false;
   updateSessionState();
   renderLoggedOutPlaceholders();
   if (elements.loginMessage) {
@@ -271,60 +274,153 @@ async function handleCreateWorker(event) {
   }
 }
 
-async function loadWorkerOptions() {
-  var select = document.getElementById("job-worker-ids");
-  if (!select || !state.token) return;
+var templateCache = [];
+
+async function loadTemplateOptions(selectEl) {
+  if (!selectEl || !state.token) return;
+  try {
+    var caps = await authedRequest("/api/v1/dashboard/summary");
+    templateCache = caps.templates || [];
+    selectEl.innerHTML = '<option value="">选择 YAML 模板…</option>';
+    for (var i = 0; i < templateCache.length; i++) {
+      var t = templateCache[i];
+      var opt = document.createElement("option");
+      opt.value = t.code;
+      opt.dataset.params = JSON.stringify(t.parameters || []);
+      opt.dataset.command = t.command || "";
+      opt.dataset.workerType = t.worker_type || "shell";
+      opt.dataset.risk = t.risk_level || "low";
+      opt.textContent = t.name + " (" + t.code + ") [" + (t.risk_level || "low") + "]";
+      selectEl.appendChild(opt);
+    }
+  } catch (_) {}
+}
+
+async function loadWorkerDropdown(selectEl) {
+  if (!selectEl || !state.token) return;
   try {
     var workers = await authedRequest("/api/v1/workers");
-    select.innerHTML = "";
+    selectEl.innerHTML = '<option value="">选择 Worker…</option>';
     for (var i = 0; i < workers.length; i++) {
       var w = workers[i];
       var opt = document.createElement("option");
       opt.value = w.id;
+      opt.dataset.workerType = w.worker_type || "shell";
       opt.textContent = w.name + " (" + w.worker_type + ") - " + w.status;
-      select.appendChild(opt);
+      selectEl.appendChild(opt);
     }
   } catch (_) {}
+}
+
+function onTemplateChange() {
+  var sel = document.getElementById("job-template");
+  var container = document.getElementById("job-params-container");
+  if (!sel || !container) return;
+  var opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.dataset.params) { container.innerHTML = ""; return; }
+  try {
+    var params = JSON.parse(opt.dataset.params);
+    var html = "";
+    for (var i = 0; i < params.length; i++) {
+      var p = params[i];
+      html += '<div class="field-group"><label class="field-label">' + escapeHTML(p.name) +
+        (p.required ? ' <span style="color:var(--accent);">*</span>' : '') +
+        '</label><input class="field-input job-param-input" data-param-name="' + escapeHTML(p.name) +
+        '" type="text" placeholder="' + escapeHTML(p.description || "") +
+        '" value="' + escapeHTML(p.default || "") + '"></div>';
+    }
+    container.innerHTML = html;
+  } catch (_) { container.innerHTML = ""; }
+}
+
+function renderTemplateCommand(command, params) {
+  var result = command;
+  for (var key in params) {
+    if (params.hasOwnProperty(key)) {
+      result = result.split("{{." + key + "}}").join(params[key]);
+      result = result.split("{{." + key + " }}").join(params[key]);
+    }
+  }
+  return result;
+}
+
+var jobMode = "template";
+
+function switchJobMode(mode) {
+  jobMode = mode;
+  var templateBtn = document.getElementById("mode-template-btn");
+  var shellBtn = document.getElementById("mode-shell-btn");
+  var templateSection = document.getElementById("template-section");
+  var cmdTextarea = document.getElementById("job-command");
+  var typeGroup = document.getElementById("job-worker-type-group");
+  if (templateBtn) templateBtn.className = mode === "template" ? "btn btn-xs btn-primary" : "btn btn-xs btn-ghost";
+  if (shellBtn) shellBtn.className = mode === "shell" ? "btn btn-xs btn-primary" : "btn btn-xs btn-ghost";
+  if (templateSection) templateSection.style.display = mode === "shell" ? "none" : "";
+  if (cmdTextarea) cmdTextarea.style.display = mode === "template" ? "none" : "";
+  if (typeGroup) typeGroup.style.display = mode === "shell" ? "" : "none";
 }
 
 async function handleCreateJob(event) {
   event.preventDefault();
   if (!ensureAuthed()) return;
 
-  try {
-    var body = {
-      name: valueOf("job-name"),
-      worker_type: valueOf("job-worker-type"),
-      command: valueOf("job-command"),
-    };
+  var workerSel = document.getElementById("job-worker");
+  var nameInput = document.getElementById("job-name");
+  if (!workerSel || !workerSel.value) { showToast("请选择 Worker"); return; }
+  if (!nameInput || !nameInput.value.trim()) { showToast("请输入任务名"); return; }
 
-    var select = document.getElementById("job-worker-ids");
-    var selected = [];
-    if (select) {
-      for (var i = 0; i < select.options.length; i++) {
-        if (select.options[i].selected) selected.push(select.options[i].value);
+  var workerID = workerSel.value;
+  var body = { name: nameInput.value.trim(), worker_ids: [workerID] };
+
+  if (jobMode === "template") {
+    // Template mode: use selected template or fall back to direct command
+    var templateSel = document.getElementById("job-template");
+    var templateOpt = templateSel && templateSel.options[templateSel.selectedIndex];
+    var cmdTextarea = document.getElementById("job-command");
+
+    if (templateOpt && templateOpt.value) {
+      // Template selected — render params
+      var workerType = templateOpt.dataset.workerType || "shell";
+      var commandTemplate = templateOpt.dataset.command || "";
+      var params = {};
+      var paramInputs = document.querySelectorAll(".job-param-input");
+      for (var i = 0; i < paramInputs.length; i++) {
+        var inp = paramInputs[i];
+        if (inp.value.trim()) params[inp.dataset.paramName] = inp.value.trim();
       }
-    }
-    if (selected.length === 0) {
-      showToast("请选择至少一个 Worker");
-      return;
-    }
-    body.worker_ids = selected;
-
-    var result = await authedRequest("/api/v1/jobs", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-
-    elements.jobForm.reset();
-    byId("job-worker-type").value = "shell";
-    await loadWorkerOptions();
-
-    if (result.jobs) {
-      showToast("已创建 " + result.total + " 个 Job，分配给 " + (result.worker_ids || []).length + " 个 Worker");
+      var paramDefs = [];
+      try { paramDefs = JSON.parse(templateOpt.dataset.params || "[]"); } catch (_) {}
+      for (var j = 0; j < paramDefs.length; j++) {
+        if (paramDefs[j].required && !params[paramDefs[j].name]) { showToast("缺少必填参数: " + paramDefs[j].name); return; }
+      }
+      body.worker_type = workerType;
+      body.command = renderTemplateCommand(commandTemplate, params);
+      body.template_code = templateOpt.value;
+      body.parameters = params;
     } else {
-      showToast("Job " + result.id + " 已创建");
+      // No template selected — use directly typed command
+      var cmd = cmdTextarea ? cmdTextarea.value.trim() : "";
+      if (!cmd) { showToast("请选择模板或输入命令"); return; }
+      body.worker_type = "shell";
+      body.command = cmd;
     }
+  } else {
+    // Shell mode: direct command
+    var cmd = (document.getElementById("job-command") || {}).value;
+    if (!cmd || !cmd.trim()) { showToast("请输入命令"); return; }
+    var wtype = (document.getElementById("job-worker-type-inp") || {}).value || "shell";
+    body.worker_type = wtype;
+    body.command = cmd.trim();
+  }
+
+  try {
+    var result = await authedRequest("/api/v1/jobs", { method: "POST", body: JSON.stringify(body) });
+    showToast("Job " + (result.jobs ? "已批量创建" : result.id + " 已创建"));
+    workerSel.value = "";
+    var ts = document.getElementById("job-template"); if (ts) ts.value = "";
+    document.getElementById("job-params-container").innerHTML = "";
+    if (nameInput) nameInput.value = "";
+    var ct = document.getElementById("job-command"); if (ct) ct.value = "";
     await refreshJobsPage();
   } catch (error) {
     showToast(error.message);
@@ -490,35 +586,432 @@ async function refreshYAMLList() {
   } catch (_) {}
 }
 
+var currentConversationID = "";
+
 async function handleTaskSubmit(event) {
   event.preventDefault();
   if (!ensureAuthed()) return;
 
   var input = elements.taskInput ? elements.taskInput.value.trim() : "";
-  if (!input) {
-    showToast("先输入任务描述");
-    return;
+  if (!input) { showToast("先输入任务描述"); return; }
+
+  // Immediately render user message.
+  var msgEl = document.getElementById("conversation-messages");
+  var userBubble = null;
+  if (msgEl) {
+    userBubble = document.createElement("div");
+    userBubble.style.cssText = "display:flex;justify-content:flex-end;margin:8px 0;";
+    userBubble.innerHTML = '<div style="max-width:75%;background:var(--accent);color:#fff;padding:8px 14px;border-radius:16px 16px 4px 16px;font-size:.8125rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;">' + escapeHTML(input) + '</div>';
+    msgEl.appendChild(userBubble);
+    msgEl.scrollTop = msgEl.scrollHeight;
+  }
+  if (elements.taskInput) elements.taskInput.value = "";
+
+  // Create Agent bubble for streaming.
+  var agentBubble = null;
+  var agentContent = null;
+  var toolList = null;
+  var finalAnswer = "";
+  if (msgEl) {
+    agentBubble = document.createElement("div");
+    agentBubble.style.cssText = "display:flex;justify-content:flex-start;margin:8px 0;";
+    agentContent = document.createElement("div");
+    agentContent.style.cssText = "max-width:85%;background:var(--surface-inset);border:1px solid var(--border);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:.8125rem;line-height:1.6;min-width:60px;";
+    agentContent.innerHTML = '<span style="color:var(--text-tertiary);">思考中…</span>';
+    agentBubble.appendChild(agentContent);
+    msgEl.appendChild(agentBubble);
+    msgEl.scrollTop = msgEl.scrollHeight;
   }
 
+  var indicator = document.getElementById("agent-running-indicator");
+  if (indicator) indicator.style.display = "flex";
+
   try {
-    if (elements.taskOutput) elements.taskOutput.textContent = "Agent 正在调用受控工具…";
-    if (elements.agentTimeline) elements.agentTimeline.textContent = "运行中…";
-    var runResult = await authedRequest("/api/v1/agent/runs", {
+    var body = { input: input, stream: true };
+    if (currentConversationID) body.conversation_id = currentConversationID;
+
+    var resp = await fetch("/api/v1/agent/runs", {
       method: "POST",
-      body: JSON.stringify({ input: input }),
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + state.token },
+      body: JSON.stringify(body),
     });
-    if (elements.taskOutput) {
-      elements.taskOutput.textContent = runResult.answer || "Agent 未返回结论。";
+
+    if (!resp.ok) {
+      var errText = await resp.text();
+      throw new Error("Agent API error: " + resp.status + " " + errText);
     }
-    renderAgentTimeline(runResult.events || []);
-    showToast("Agent 已完成 " + (runResult.steps || 0) + " 个推理步骤");
-    await refreshTasksPage();
+
+    var reader = resp.body.getReader();
+    var decoder = new TextDecoder();
+    var buf = "";
+    var pendingApprovals = null;
+
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buf += decoder.decode(chunk.value, {stream: true});
+      var lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (var l = 0; l < lines.length; l++) {
+        var line = lines[l].trim();
+        if (!line.startsWith("data: ")) continue;
+        try {
+          var ev = JSON.parse(line.slice(6));
+          if (ev.type === "tool") {
+            // Add collapsed tool entry.
+            if (!toolList) {
+              toolList = document.createElement("div");
+              toolList.style.cssText = "margin-bottom:4px;";
+              if (agentContent) agentContent.insertBefore(toolList, agentContent.firstChild);
+            }
+            var toolDiv = document.createElement("details");
+            toolDiv.style.cssText = "font-size:.6875rem;margin:2px 0;";
+            var toolData = ev.data && ev.data.result ? JSON.stringify(ev.data.result, null, 2) : "";
+            toolDiv.innerHTML = '<summary style="cursor:pointer;color:var(--text-tertiary);">🔧 ' + escapeHTML(ev.name || "") + '</summary>' +
+              '<pre class="code-block" style="margin:2px 0 0;max-height:80px;font-size:.625rem;">' + escapeHTML(toolData) + '</pre>';
+            toolList.appendChild(toolDiv);
+          } else if (ev.type === "assistant" && ev.data) {
+            // Show thinking text dimmed.
+            var think = document.createElement("div");
+            think.style.cssText = "color:var(--text-tertiary);font-size:.75rem;margin:4px 0;";
+            think.textContent = String(ev.data).slice(0, 200);
+            if (agentContent) agentContent.appendChild(think);
+          } else if (ev.type === "done") {
+            var finalData = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
+            finalAnswer = finalData.answer || finalData.error || "";
+            if (finalData.conversation_id && !currentConversationID) {
+              currentConversationID = finalData.conversation_id;
+            }
+            pendingApprovals = finalData.pending_approvals || null;
+          }
+        } catch (_) {}
+      }
+      if (msgEl) msgEl.scrollTop = msgEl.scrollHeight;
+    }
   } catch (error) {
-    if (elements.taskOutput) {
-      elements.taskOutput.textContent = error.message;
-    }
+    if (agentContent) agentContent.innerHTML = '<span style="color:var(--danger);">错误: ' + escapeHTML(error.message) + '</span>';
     showToast(error.message);
   }
+  if (indicator) indicator.style.display = "none";
+
+  // Append final answer below thinking + tools, with a separator.
+  if (agentContent && finalAnswer) {
+    // Remove the initial "思考中…" placeholder.
+    var placeholder = agentContent.querySelector("span");
+    if (placeholder && placeholder.textContent === "思考中…") placeholder.remove();
+    var sep = document.createElement("div");
+    sep.style.cssText = "border-top:1px solid var(--border);margin:8px 0;";
+    agentContent.appendChild(sep);
+    var answer = document.createElement("div");
+    answer.className = "md-content";
+    answer.innerHTML = markdownToHTML(finalAnswer);
+    agentContent.appendChild(answer);
+  }
+
+  // Show pending approvals.
+  window._adpPendingApprovals = pendingApprovals;
+  if (pendingApprovals && pendingApprovals.length > 0) {
+    showToast("Agent 等待审批 " + pendingApprovals.length + " 个操作");
+    await refreshTasksPage();
+  } else {
+    showToast("Agent 已完成");
+    await loadConversations();
+  }
+}
+
+async function handleBatchApproval(approvals, approved) {
+  if (!ensureAuthed()) return;
+  // Clear immediately so buttons disappear.
+  window._adpPendingApprovals = null;
+  var box = document.getElementById("approval-action-box");
+  if (box) box.remove();
+
+  for (var i = 0; i < approvals.length; i++) {
+    try {
+      await authedRequest("/api/v1/approvals/jobs/" + encodeURIComponent(approvals[i].job_id), {
+        method: "POST",
+        body: JSON.stringify({ approved: approved, comment: approved ? "Approved" : "Rejected" }),
+      });
+    } catch (e) { showToast("审批失败: " + e.message); return; }
+  }
+
+  var verb = approved ? "已批准" : "已拒绝";
+  var jobIds = approvals.map(function(a) { return a.job_id; }).join(", ");
+  var followUp = verb + " Job " + jobIds + "。请检查执行结果并继续。";
+  showToast(verb + "，Agent 继续执行…");
+
+  // Directly call agent API for continuation.
+  var indicator = document.getElementById("agent-running-indicator");
+  if (indicator) indicator.style.display = "flex";
+  try {
+    var body = { input: followUp };
+    if (currentConversationID) body.conversation_id = currentConversationID;
+    await authedRequest("/api/v1/agent/runs", { method: "POST", body: JSON.stringify(body) });
+  } catch (_) {}
+  if (indicator) indicator.style.display = "none";
+  await refreshTasksPage();
+}
+
+async function loadConversations() {
+  var listEl = document.getElementById("conversation-list");
+  if (!listEl || !state.token) return;
+  try {
+    var convs = await authedRequest("/api/v1/conversations");
+    listEl.innerHTML = "";
+    for (var i = 0; i < convs.length; i++) {
+      var c = convs[i];
+      var active = c.id === currentConversationID;
+      var item = document.createElement("div");
+      item.className = "list-card" + (active ? " is-active" : "");
+      item.style.cssText = "cursor:pointer;margin-bottom:6px;" + (active ? "border-color:var(--accent);" : "");
+      item.onclick = function(id) { return function() { selectConversation(id); }; }(c.id);
+      item.innerHTML = '<strong style="font-size:.8125rem;">' + escapeHTML(c.title || "新对话") + '</strong>' +
+        '<span style="font-size:.6875rem;color:var(--text-tertiary);display:block;">' + formatTime(c.updated_at) + '</span>';
+      listEl.appendChild(item);
+    }
+  } catch (_) {}
+}
+
+async function selectConversation(id) {
+  currentConversationID = id;
+  await refreshTasksPage();
+}
+
+function startNewConversation() {
+  currentConversationID = "";
+  var msgEl = document.getElementById("conversation-messages");
+  if (msgEl) msgEl.innerHTML = '<p style="color:var(--text-tertiary);text-align:center;padding:20px;">开始新对话</p>';
+  var titleEl = document.getElementById("conv-title-text");
+  if (titleEl) titleEl.textContent = "新对话";
+  loadConversations();
+}
+
+function markdownToHTML(text) {
+  if (!text) return "";
+  // Escape HTML first, then selectively unescape markdown-formatted content.
+  var html = escapeHTML(text);
+
+  // Code blocks (``` ... ```)
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, function(_, lang, code) {
+    return '<pre class="code-block" style="margin:8px 0;max-height:300px;overflow:auto;"><code>' + code.trim() + '</code></pre>';
+  });
+
+  // Inline code (`...`)
+  html = html.replace(/`([^`]+)`/g, '<code style="background:var(--bg-tertiary);padding:1px 4px;border-radius:3px;font-family:var(--font-mono);font-size:.8125rem;">$1</code>');
+
+  // Bold (**...**)
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+  // Italic (*...*)
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Headers (### ..., ## ..., # ...)
+  html = html.replace(/^### (.+)$/gm, '<h4 style="margin:10px 0 4px;font-size:.875rem;">$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3 style="margin:12px 0 4px;font-size:.9375rem;">$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2 style="margin:14px 0 6px;font-size:1rem;">$1</h2>');
+
+  // Tables
+  html = html.replace(/((?:^\|.+\|$\n?)+)/gm, function(match) {
+    var lines = match.trim().split('\n');
+    if (lines.length < 2) return match;
+    // Skip separator line (|---|---|)
+    var rows = [];
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\|[\s\-:|]+\|$/.test(lines[i])) continue;
+      var cells = lines[i].split('|').filter(function(c) { return c.trim() !== ''; });
+      var tag = i === 0 ? 'th' : 'td';
+      rows.push('<tr>' + cells.map(function(c) { return '<' + tag + ' style="padding:2px 8px;border:1px solid var(--border);">' + c.trim() + '</' + tag + '>'; }).join('') + '</tr>');
+    }
+    return '<table style="border-collapse:collapse;margin:8px 0;font-size:.8125rem;">' + rows.join('') + '</table>';
+  });
+
+  // Unordered lists (- ...)
+  html = html.replace(/(?:^- .+$\n?)+/gm, function(match) {
+    var items = match.trim().split('\n').map(function(line) {
+      return '<li>' + line.replace(/^- /, '') + '</li>';
+    }).join('');
+    return '<ul style="margin:4px 0;padding-left:20px;">' + items + '</ul>';
+  });
+
+  // Paragraphs: double newlines → <br><br>
+  html = html.replace(/\n\n/g, '<br><br>');
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
+}
+
+async function renderConversationMessages() {
+  var msgEl = document.getElementById("conversation-messages");
+  if (!msgEl || !currentConversationID) return;
+  try {
+    var msgs = await authedRequest("/api/v1/conversations/" + encodeURIComponent(currentConversationID) + "/messages");
+    msgEl.innerHTML = "";
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      if (m.role === "tool") {
+        // Tool messages: compact, centered
+        var tdiv = document.createElement("div");
+        tdiv.style.cssText = "text-align:center;margin:4px 0;";
+        tdiv.innerHTML = '<details style="display:inline-block;font-size:.6875rem;color:var(--text-tertiary);cursor:pointer;background:var(--surface-inset);padding:3px 10px;border-radius:10px;">' +
+          '<summary>🔧 ' + escapeHTML(m.tool_name || "tool") + '</summary>' +
+          '<pre class="code-block" style="margin:4px 0 0;max-height:100px;font-size:.625rem;text-align:left;">' + escapeHTML(JSON.stringify(m.tool_data, null, 2)) + '</pre></details>';
+        msgEl.appendChild(tdiv);
+      } else if (m.role === "user") {
+        // User: right-aligned bubble
+        var row = document.createElement("div");
+        row.style.cssText = "display:flex;justify-content:flex-end;margin:8px 0;";
+        row.innerHTML = '<div style="max-width:75%;background:var(--accent);color:#fff;padding:8px 14px;border-radius:16px 16px 4px 16px;font-size:.8125rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;">' + escapeHTML(m.content) + '</div>';
+        msgEl.appendChild(row);
+      } else if (m.role === "assistant") {
+        if (m.content) {
+          var row2 = document.createElement("div");
+          row2.style.cssText = "display:flex;justify-content:flex-start;margin:8px 0;";
+          row2.innerHTML = '<div style="max-width:85%;background:var(--surface-inset);border:1px solid var(--border);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:.8125rem;line-height:1.6;"><div class="md-content">' + markdownToHTML(m.content) + '</div></div>';
+          msgEl.appendChild(row2);
+        }
+      }
+    }
+    // Render pending approval buttons from conversation messages.
+    var allApprovals = [];
+    for (var k = 0; k < msgs.length; k++) {
+      if (msgs[k].role === "tool") {
+        var found = extractPendingApprovals(msgs[k].tool_data);
+        for (var f = 0; f < found.length; f++) { allApprovals.push(found[f]); }
+      }
+    }
+    // Also merge from the stream's completed result. Deduplicate because the
+    // same jobs have already been persisted as tool messages.
+    if (window._adpPendingApprovals) {
+      for (var w = 0; w < window._adpPendingApprovals.length; w++) { allApprovals.push(window._adpPendingApprovals[w]); }
+    }
+    // Tool messages are historical snapshots. Check the authoritative pending
+    // list so actions disappear as soon as a decision has been recorded.
+    var pendingJobs = [];
+    try {
+      pendingJobs = await authedRequest("/api/v1/approvals/jobs");
+    } catch (_) {}
+    var pendingByID = {};
+    for (var p = 0; p < pendingJobs.length; p++) { pendingByID[pendingJobs[p].id] = pendingJobs[p]; }
+    var uniqueApprovals = [];
+    var seenApprovalIDs = {};
+    for (var a = 0; a < allApprovals.length; a++) {
+      var approval = allApprovals[a];
+      var approvalID = approval && approval.job_id;
+      if (!approvalID || seenApprovalIDs[approvalID] || !pendingByID[approvalID]) continue;
+      seenApprovalIDs[approvalID] = true;
+      uniqueApprovals.push(Object.assign({}, approval, pendingByID[approvalID]));
+    }
+    if (uniqueApprovals.length > 0) {
+      var box = document.createElement("div");
+      box.id = "approval-action-box";
+      box.style.cssText = "margin:12px 0;padding:12px;border:2px solid var(--accent);border-radius:8px;background:var(--surface-inset);";
+      var listHtml = uniqueApprovals.map(function(a) {
+        return '<div style="font-family:var(--font-mono);font-size:.75rem;margin:4px 0;">' +
+          escapeHTML(a.job_id || "") + ' — ' + escapeHTML(a.command || a.module_code || "") +
+          ' → ' + escapeHTML(a.worker_id || "") +
+          '<span style="display:inline-flex;gap:6px;margin-left:8px;vertical-align:middle;">' +
+            '<button class="btn btn-xs btn-primary" type="button" data-conversation-job-id="' + escapeHTML(a.job_id) + '" data-conversation-decision="approve">批准</button>' +
+            '<button class="btn btn-xs btn-ghost" type="button" style="color:var(--danger);" data-conversation-job-id="' + escapeHTML(a.job_id) + '" data-conversation-decision="reject">拒绝</button>' +
+            '<button class="btn btn-xs btn-ghost" type="button" data-conversation-job-id="' + escapeHTML(a.job_id) + '" data-conversation-decision="suggest">建议</button>' +
+          '</span></div>';
+      }).join("");
+      box.innerHTML = '<strong style="color:var(--accent);">⚠ 需要审批</strong>' + listHtml +
+        '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<button class="btn btn-primary btn-xs" id="approve-all-btn">批准全部</button>' +
+          '<button class="btn btn-xs" id="reject-all-btn" style="color:var(--danger);border-color:var(--danger);">拒绝全部</button>' +
+        '</div>';
+      msgEl.appendChild(box);
+      document.getElementById("approve-all-btn").onclick = function() { handleBatchApproval(uniqueApprovals, true); };
+      document.getElementById("reject-all-btn").onclick = function() { handleBatchApproval(uniqueApprovals, false); };
+    }
+    msgEl.scrollTop = msgEl.scrollHeight;
+  } catch (_) {}
+}
+
+function extractPendingApprovals(toolData) {
+  var out = [];
+  if (!toolData) return out;
+  // Handle both {ok:true, result:{jobs:[...]}} and {jobs:[...]} directly.
+  var r = toolData.result || toolData;
+  if (!r || typeof r !== "object") return out;
+  var jobs = r.jobs;
+  if (!jobs && r.job_id) jobs = [{job_id: r.job_id, approval_required: r.approval_required, status: r.status, worker_id: r.worker_id}];
+  if (!jobs || !Array.isArray(jobs)) return out;
+  for (var i = 0; i < jobs.length; i++) {
+    var j = jobs[i];
+    if (j && j.approval_required && j.status === "waiting_approval") {
+      out.push(j);
+    }
+  }
+  return out;
+}
+
+async function handleConversationApproval(jobID, approved) {
+  if (!ensureAuthed()) return;
+  // Clear pending approvals so buttons disappear.
+  window._adpPendingApprovals = null;
+  try {
+    await authedRequest("/api/v1/approvals/jobs/" + encodeURIComponent(jobID), {
+      method: "POST",
+      body: JSON.stringify({ approved: approved, comment: approved ? "Approved" : "Rejected" }),
+    });
+  } catch (e) { showToast("审批失败: " + e.message); return; }
+
+  var verb = approved ? "已批准" : "已拒绝";
+  showToast(verb + "，Agent 继续执行…");
+
+  // Auto-continue in same conversation.
+  var followUp = verb + " Job " + jobID + "。请检查执行结果并继续。";
+  var indicator = document.getElementById("agent-running-indicator");
+  if (indicator) indicator.style.display = "flex";
+  try {
+    var body = { input: followUp };
+    if (currentConversationID) body.conversation_id = currentConversationID;
+    await authedRequest("/api/v1/agent/runs", { method: "POST", body: JSON.stringify(body) });
+  } catch (_) {}
+  if (indicator) indicator.style.display = "none";
+  await refreshTasksPage();
+}
+
+function handleConversationAction(event) {
+  var button = event.target.closest("[data-conversation-job-id]");
+  if (!button) return;
+  var jobID = button.dataset.conversationJobId;
+  if (button.dataset.conversationDecision === "suggest") {
+    showSuggestBox(jobID);
+    return;
+  }
+  handleConversationApproval(jobID, button.dataset.conversationDecision === "approve");
+}
+
+function showSuggestBox(jobID, workerID) {
+  var msgEl = document.getElementById("conversation-messages");
+  if (!msgEl) return;
+  // Remove existing suggest box if any
+  var existing = document.getElementById("suggest-box");
+  if (existing) existing.remove();
+
+  var box = document.createElement("div");
+  box.id = "suggest-box";
+  box.style.cssText = "margin:8px 0;padding:8px;border:1px solid var(--accent);border-radius:6px;background:var(--surface-inset);";
+  box.innerHTML = '<p style="font-size:.75rem;margin:0 0 6px;">建议 Agent 调整策略 (Job ' + jobID.slice(-6) + ')</p>' +
+    '<textarea id="suggest-text" class="field-textarea" rows="2" style="font-size:.75rem;" placeholder="例如：不要重启服务，先检查错误日志再决定"></textarea>' +
+    '<div style="margin-top:6px;display:flex;gap:6px;">' +
+      '<button class="btn btn-xs btn-primary" onclick="submitSuggestion(\'' + jobID + '\')">提交建议</button>' +
+      '<button class="btn btn-xs btn-ghost" onclick="document.getElementById(\'suggest-box\').remove()">取消</button>' +
+    '</div>';
+  msgEl.appendChild(box);
+  box.scrollIntoView({behavior: "smooth"});
+}
+
+async function submitSuggestion(jobID) {
+  var textEl = document.getElementById("suggest-text");
+  if (!textEl || !textEl.value.trim()) { showToast("请输入建议"); return; }
+  var suggestion = "关于 Job " + jobID.slice(-6) + " 的建议：" + textEl.value.trim() + "。请根据这个建议重新评估并调整操作。";
+  // Submit as a new agent run in the same conversation
+  elements.taskInput.value = suggestion;
+  document.getElementById("suggest-box").remove();
+  await handleTaskSubmit({preventDefault: function(){}});
 }
 
 function renderAgentTimeline(events) {
@@ -599,6 +1092,29 @@ async function refreshCurrentPage() {
     }
     showToast(error.message);
   }
+}
+
+function startJobsAutoRefresh() {
+  if (page !== "jobs" || !state.token || state.refreshTimer) return;
+
+  var refresh = async function() {
+    if (document.hidden || state.refreshInFlight || !state.token) return;
+    state.refreshInFlight = true;
+    try {
+      // Preserve the create-form selections while only the job statuses refresh.
+      await refreshJobsPage(false);
+    } catch (_) {
+      // A transient polling failure should not interrupt the page or create a
+      // toast every interval; regular user actions still surface errors.
+    } finally {
+      state.refreshInFlight = false;
+    }
+  };
+
+  state.refreshTimer = window.setInterval(refresh, 2000);
+  document.addEventListener("visibilitychange", function() {
+    if (!document.hidden) refresh();
+  });
 }
 
 async function refreshSessionOnly() {
@@ -702,13 +1218,18 @@ async function refreshWorkersPage() {
   );
 }
 
-async function refreshJobsPage() {
+async function refreshJobsPage(refreshOptions) {
   var summary = await authedRequest("/api/v1/dashboard/summary");
   state.user = summary.user;
   updateSessionState(summary.current_time);
 
   var jobs = await authedRequest("/api/v1/jobs?limit=16");
-  await loadWorkerOptions();
+  if (refreshOptions !== false) {
+    var templateSel = document.getElementById("job-template");
+    var workerSel = document.getElementById("job-worker");
+    if (templateSel) await loadTemplateOptions(templateSel);
+    if (workerSel) await loadWorkerDropdown(workerSel);
+  }
   renderList(
     elements.jobList,
     jobs,
@@ -768,8 +1289,18 @@ async function refreshTasksPage() {
   state.user = summary.user;
   updateSessionState(summary.current_time);
 
-  var tasks = await authedRequest("/api/v1/jobs?source_type=agent");
+  await loadConversations();
+  await renderConversationMessages();
 
+  var titleEl = document.getElementById("conv-title-text");
+  if (titleEl && currentConversationID) {
+    try {
+      var conv = await authedRequest("/api/v1/conversations/" + encodeURIComponent(currentConversationID));
+      titleEl.textContent = conv.conversation ? conv.conversation.title || "对话" : "对话";
+    } catch (_) {}
+  }
+
+  var tasks = await authedRequest("/api/v1/jobs?source_type=agent&limit=20");
   renderList(
     elements.taskList,
     tasks,
@@ -777,7 +1308,7 @@ async function refreshTasksPage() {
       return '<div class="list-card">' +
         '<div style="flex: 1;">' +
           '<strong style="font-size: 0.875rem;">' + escapeHTML(task.name) + '</strong>' +
-          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(task.template_code || "受控 Module") + '</span>' +
+          '<span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 8px;">' + escapeHTML(task.template_code || task.source_type || "agent") + '</span>' +
         '</div>' +
         '<div class="list-card-meta">' +
           '<span class="status-pill ' + statusClass(task.status) + '"><span class="status-dot"></span>' + escapeHTML(task.status) + '</span>' +
@@ -940,7 +1471,7 @@ function renderSummaryMetrics(summary) {
     ["在线 Workers", summary.metrics.workers_online, summary.workers.length + " 个已注册"],
     ["Jobs 总数", summary.metrics.jobs_total, summary.metrics.jobs_success + " 成功 / " + summary.metrics.jobs_failed + " 失败"],
     ["待审批", summary.metrics.jobs_waiting_approval, "等待人工确认"],
-    ["受控能力", summary.templates_total, "可供 Agent 调用的 Module"],
+    ["受控能力", summary.templates_total, "YAML 模板 (动态加载)"],
   ];
 
   elements.metricsGrid.innerHTML = metrics.map(function(m) {

@@ -30,7 +30,7 @@ func (t *testTool) Execute(_ context.Context, args json.RawMessage) (any, error)
 func TestRuntimeRunsToolLoop(t *testing.T) {
 	client := &scriptedClient{}
 	tool := &testTool{}
-	result, err := New(client, []Tool{tool}, 3, 0).Run(context.Background(), "inspect worker")
+	result, err := New(client, []Tool{tool}, 3, 0).Run(context.Background(), "inspect worker", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

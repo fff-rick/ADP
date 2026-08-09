@@ -15,6 +15,7 @@ type ServerConfig struct {
 	LLMAPIKey             string
 	LLMModel              string
 	AgentMaxSteps         int
+	AgentAllowShell       bool
 	ManagedConfigDir      string
 	ManagedConfigSyncMode string
 }

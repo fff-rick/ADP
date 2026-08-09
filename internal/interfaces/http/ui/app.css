@@ -759,6 +759,45 @@
     word-break: break-word;
     color: var(--text-primary);
   }
+  .md-content {
+    font-size: 0.8125rem;
+    line-height: 1.65;
+    color: var(--text-primary);
+  }
+  .md-content h2, .md-content h3, .md-content h4 {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .md-content table {
+    width: 100%;
+  }
+  .md-content th {
+    background: var(--surface-inset);
+    font-weight: 600;
+    text-align: left;
+  }
+  .md-content td {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  .md-content strong {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+  .md-content em {
+    color: var(--text-secondary);
+  }
+  .md-content code {
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+  }
+  .md-content ul {
+    margin: 4px 0;
+    padding-left: 20px;
+  }
+  .md-content li {
+    margin: 2px 0;
+  }
   .empty-state {
     display: flex;
     flex-direction: column;

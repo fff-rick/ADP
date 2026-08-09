@@ -489,6 +489,7 @@ type Job struct {
 	Command       string                 `protobuf:"bytes,4,opt,name=command,proto3" json:"command,omitempty"`
 	TemplateCode  string                 `protobuf:"bytes,5,opt,name=template_code,json=templateCode,proto3" json:"template_code,omitempty"`
 	Parameters    map[string]string      `protobuf:"bytes,6,rep,name=parameters,proto3" json:"parameters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	SourceType    string                 `protobuf:"bytes,7,opt,name=source_type,json=sourceType,proto3" json:"source_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -563,6 +564,13 @@ func (x *Job) GetParameters() map[string]string {
 		return x.Parameters
 	}
 	return nil
+}
+
+func (x *Job) GetSourceType() string {
+	if x != nil {
+		return x.SourceType
+	}
+	return ""
 }
 
 type JobResult struct {
@@ -747,7 +755,7 @@ const file_api_proto_adp_v1_worker_proto_rawDesc = "" +
 	"\n" +
 	"ip_address\x18\x02 \x01(\tR\tipAddress\x12\x1b\n" +
 	"\tcpu_usage\x18\x03 \x01(\x01R\bcpuUsage\x12#\n" +
-	"\rstorage_usage\x18\x04 \x01(\x01R\fstorageUsage\"\x85\x02\n" +
+	"\rstorage_usage\x18\x04 \x01(\x01R\fstorageUsage\"\xa6\x02\n" +
 	"\x03Job\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n" +
@@ -757,7 +765,9 @@ const file_api_proto_adp_v1_worker_proto_rawDesc = "" +
 	"\rtemplate_code\x18\x05 \x01(\tR\ftemplateCode\x12;\n" +
 	"\n" +
 	"parameters\x18\x06 \x03(\v2\x1b.adp.v1.Job.ParametersEntryR\n" +
-	"parameters\x1a=\n" +
+	"parameters\x12\x1f\n" +
+	"\vsource_type\x18\a \x01(\tR\n" +
+	"sourceType\x1a=\n" +
 	"\x0fParametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa7\x01\n" +
