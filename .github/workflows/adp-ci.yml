@@ -107,6 +107,8 @@ jobs:
           digest = os.environ["IMAGE_DIGEST"]
           if not digest.startswith("sha256:"):
               raise SystemExit(f"unexpected image digest: {digest!r}")
+          with Path(os.environ["GITHUB_ENV"]).open("a") as env_file:
+              env_file.write(f"IMAGE_DIGEST={digest}\n")
 
           lines = path.read_text().splitlines()
           active = ""
