@@ -11,7 +11,7 @@ resources:
 images:
   - name: ghcr.io/fff-rick/adp-server
     newName: ghcr.io/fff-rick/adp-server
-    digest: sha256:3169e85795c9ff993e7a8c14f59cc053a795049c2d1fb06f6c72bdb223c37623
+    digest: sha256:5758144da829f4629bac2d9d69ecc32ae8524608f8598b0a235f88887856d371
 
 patches:
   - path: server-config.patch.yaml
