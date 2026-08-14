@@ -16,7 +16,7 @@ GitHub Actions 会把 Server 镜像推送到 GitHub Container Registry：
 
 ```text
 registry: ghcr.io
-server image: ghcr.io/<github-owner>/adp-server:<git-sha>
+server image: ghcr.io/<github-owner>/adp-server@sha256:<image-digest>
 ```
 
 GitHub Actions 使用仓库内置的 `GITHUB_TOKEN` 推送镜像，不需要额外配置镜像仓库用户名和密码。需要确认仓库的 Actions 权限允许写入 packages：
@@ -41,7 +41,7 @@ GitHub 源码仓库
 
 ## 4. CI 权限
 
-GitHub Actions 需要能推送 GHCR package，并能把新镜像 tag 提交回当前仓库：
+GitHub Actions 需要能推送 GHCR package，并能把新镜像 digest 提交回当前仓库：
 
 ```text
 Settings -> Actions -> General -> Workflow permissions -> Read and write permissions

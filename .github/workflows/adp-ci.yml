@@ -83,6 +83,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push server
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -91,11 +92,11 @@ jobs:
           tags: |
             ${{ steps.image.outputs.repository }}:${{ steps.image.outputs.tag }}
 
-      - name: Update deployment image tag
+      - name: Pin deployment image digest
         working-directory: deploy/k8s/overlays/prod
         env:
           IMAGE_REPOSITORY: ${{ steps.image.outputs.repository }}
-          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           python3 - <<'PY'
           import os
@@ -103,10 +104,13 @@ jobs:
 
           path = Path("kustomization.yaml")
           server = os.environ["IMAGE_REPOSITORY"]
-          tag = os.environ["IMAGE_TAG"]
+          digest = os.environ["IMAGE_DIGEST"]
+          if not digest.startswith("sha256:"):
+              raise SystemExit(f"unexpected image digest: {digest!r}")
 
           lines = path.read_text().splitlines()
           active = ""
+          digest_updated = False
           for i, line in enumerate(lines):
               stripped = line.strip()
               if stripped.startswith("- name: ") and stripped.endswith("/adp-server"):
@@ -116,7 +120,14 @@ jobs:
               elif active == "server" and stripped.startswith("newName: "):
                   lines[i] = f"    newName: {server}"
               elif active == "server" and stripped.startswith("newTag: "):
-                  lines[i] = f"    newTag: {tag}"
+                  lines[i] = f"    digest: {digest}"
+                  digest_updated = True
+              elif active == "server" and stripped.startswith("digest: "):
+                  lines[i] = f"    digest: {digest}"
+                  digest_updated = True
+
+          if not digest_updated:
+              raise SystemExit("adp-server image entry has no newTag or digest field")
 
           path.write_text("\n".join(lines) + "\n")
           PY
@@ -129,5 +140,5 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m "deploy: adp ${IMAGE_TAG} [skip ci]"
+          git commit -m "deploy: adp ${IMAGE_DIGEST:7:12} [skip ci]"
           git push origin "HEAD:${GITHUB_REF_NAME}"
