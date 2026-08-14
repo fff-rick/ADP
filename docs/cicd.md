@@ -8,10 +8,10 @@
 开发者 push main
       │
       ▼
-GitHub Actions (lint → test → build → push ghcr → SSH 触发更新)
+GitHub Actions (lint → test → build → push ghcr → 提交镜像 digest)
       │
-      ├── ghcr.io/fff-rick/adp-server:latest
-      │   ghcr.io/fff-rick/adp-worker:latest
+      ├── ghcr.io/fff-rick/adp-server:<sha>
+      │   sha256:<immutable-digest>
       │
       ▼
 ArgoCD（部署在 kubeadm 集群，3分钟轮询）
@@ -28,19 +28,19 @@ ArgoCD（部署在 kubeadm 集群，3分钟轮询）
 |------|--------|--------|
 | 镜像构建 | 远程主机 `docker build` | GitHub Actions `docker build & push` |
 | 镜像存储 | 远程主机本地 | ghcr.io（GitHub Container Registry） |
-| 镜像 Tag | `release.env` 手工维护 | CI 自动 `latest` + `$SHA` 双 Tag |
+| 镜像版本 | `release.env` 手工维护 | CI 提交不可变 image digest |
 | 清单管理 | 裸 YAML（`manifests/`） | Kustomize（`base/` + `overlays/prod/`） |
 | 敏感配置 | `kubectl create secret --from-env-file` | SealedSecrets 加密后提交 Git |
-| 部署触发 | SSH 远程执行脚本 | CI: `kubectl set image` / ArgoCD: 自动同步 |
+| 部署触发 | SSH 远程执行脚本 | Git 提交镜像 digest / Argo CD 自动同步 |
 | 配置漂移修复 | 无 | ArgoCD selfHeal |
 
 ## CI 流水线
 
-工作流文件：`.github/workflows/pr-cicd.yml`
+工作流文件：`.github/workflows/adp-ci.yml`
 
 ```
 PR 触发：lint → test
-main push：lint → test → build → push ghcr → SSH 触发部署
+main push：lint → test → build → push GHCR → 提交部署清单 → Argo CD 自动同步
 ```
 
 ### lint
@@ -76,15 +76,9 @@ docker push ghcr.io/fff-rick/adp-worker:latest
 
 ### 触发部署
 
-CI 通过 SSH 连接服务器，执行 `kubectl set image` 触发滚动更新：
-
-```bash
-ssh adpdeploy@<host> \
-  "kubectl set image deployment/adp-server adp-server=ghcr.io/fff-rick/adp-server:$SHA && \
-   kubectl set image deployment/adp-worker adp-worker=ghcr.io/fff-rick/adp-worker:$SHA && \
-   kubectl rollout status deployment/adp-server --timeout=120s && \
-   kubectl rollout status deployment/adp-worker --timeout=120s"
-```
+CI 从构建步骤取得 GHCR 的 `sha256` digest，更新
+`deploy/k8s/overlays/prod/kustomization.yaml` 并提交回 `main`。Argo CD 发现
+Git 提交后同步集群；CI 不连接集群，也不执行 `kubectl` 或 SSH。
 
 ## GitHub Secrets 清单
 
@@ -92,10 +86,7 @@ ssh adpdeploy@<host> \
 
 | Secret | 说明 |
 |--------|------|
-| `DEPLOY_HOST` | 服务器 IP |
-| `ADP_DEPLOY_USER` | SSH 用户名（`adpdeploy`） |
-| `ADP_DEPLOY_SSH_KEY` | SSH 私钥完整内容（`-----BEGIN` 到 `-----END`） |
-| `ADP_DEPLOY_PORT` | SSH 端口（默认 `22`） |
+| 无 | 发布 CI 不需要主机、SSH 或 Kubernetes 凭据 |
 
 同时确保 Settings → Actions → General → **Workflow permissions** 设为 **Read and write**（CI 需要 push 镜像到 ghcr.io）。
 
@@ -103,10 +94,10 @@ ghcr.io 镜像需设为 **Public**（Package Settings → Change visibility）�
 
 ## ghcr.io 镜像
 
-CI 每次推送两个 Tag：
+CI 推送提交 SHA tag，并把其不可变 digest 写入 GitOps 清单：
 
-- `ghcr.io/fff-rick/adp-server:latest` — 滚动 Tag，始终指向最新
-- `ghcr.io/fff-rick/adp-server:<sha>` — 固定 Tag，对应唯一提交
+- `ghcr.io/fff-rick/adp-server:<sha>` — 构建产物的可读索引
+- `ghcr.io/fff-rick/adp-server@sha256:...` — 实际部署引用，内容不可变
 
 同理 `adp-worker`。
 
