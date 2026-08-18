@@ -2,7 +2,7 @@
 
 ADP 是一个面向智能运维场景的原型项目，当前定义为“基于 AI 的辅助式任务调度平台”。
 
-本仓库目前完成的是 `Phase 0`，重点不是功能开发，而是先把项目范围、架构边界、技术栈选择和仓库骨架搭建清楚，为后续实现打基础。
+项目已完成最小调度闭环、风控审批、经验库与受控 Tool-Calling Agent 等核心能力；早期 Phase 0 的规划记录保留在 `docs/project/`，不作为当前实现的技术事实。
 
 ## Phase 0 范围
 
@@ -27,18 +27,16 @@ ADP 是一个面向智能运维场景的原型项目，当前定义为“基于 
 - `Scheduler`：任务入队、任务分发、失败重试、超时处理、执行追踪
 - `Worker`：只负责受控执行，不做自主决策
 - `LLM Gateway`：统一 Tool-Calling 模型调用抽象层
-- `MySQL`：保存元数据、任务定义、任务执行记录、审计日志、故障案例
-- `Redis`：承担队列、缓存和轻量协调能力
+- `PostgreSQL`：保存元数据、任务定义、任务执行记录、审计日志、故障案例和 Agent 运行事件
 
-## 建议技术栈
+## 当前技术栈
 
-- Go `1.24.x`
-- Gin `1.10.x`
-- gRPC `1.70.x`
-- MySQL `8.0.x`
-- Redis `7.2.x`
+- Go `1.25.x`
+- Go 标准库 `net/http`
+- gRPC `1.82.x`
+- PostgreSQL `16`
 - Docker Compose `v2`
-- Prometheus `2.x`
+- Prometheus 文本格式指标（`/metrics`）
 
 版本策略：
 
@@ -88,8 +86,6 @@ ADP/
     interfaces/
       http/
   scripts/
-  tests/
-    integration/
   README.md
 ```
 
@@ -194,8 +190,13 @@ protoc --go_out=. --go-grpc_out=. \
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/v1/agent/runs` | 运行受控 Tool-Calling Agent；输入为 `{"input":"..."}` |
+| GET | `/api/v1/agent/runs/{id}` | 查询可恢复 Agent run 的状态与元数据 |
+| GET | `/api/v1/agent/runs/{id}/events` | 以 SSE 重放该 run 的持久化事件（可选 `?after=<event_id>`） |
+| POST | `/api/v1/agent/runs/{id}/cancel` | 取消 queued/waiting_approval 状态的 run |
 
 Agent 通过目标 Worker 在其宿主机执行已注册 Module：可读取 Worker 上报的宿主机事实、执行 `host_diagnostics` 等只读诊断，并可创建 `restart_service` 修复操作。修复操作必须使用 Worker 本地 `services.cnf` 中固定的 `unit`，且默认策略要求人工审批；Agent 不具备任意 bash 权限。
+
+Agent run 会持久化模型消息、工具调用和工具结果，并记录 `trace_id`、策略版本和提示词版本。审批批准后，服务端从已保存的工具结果继续同一 run；创建的任务使用 run、tool-call、worker 三元组幂等键，因此审批请求或服务重启不会重复创建任务。
 
 ### Phase 4 审批与审计 API
 
@@ -223,31 +224,24 @@ curl -X POST http://127.0.0.1:8080/api/v1/agent/runs \
 
 ## 下一步
 
-当前已进入 Phase 6，建议优先补齐：
+当前已进入交付完善阶段，建议优先补齐：
 
-- `tests/integration` 端到端验收继续扩展
 - Docker Compose 演示环境联调与验收
 - 3 个典型场景的完整功能验收与压测
-- Phase 6 交付材料整理
+- 独立端到端测试套件与交付材料整理
 
 ## 测试
 
-1. 运行当前核心包测试：
+运行全部测试与静态检查：
 
 ```bash
-go test ./internal/interfaces/http ./internal/infrastructure/scheduler ./internal/application/analyzer
-```
-
-2. 运行 Phase 6 集成验收测试：
-
-```bash
-go test ./tests/integration/...
+go test ./...
+go vet ./...
 ```
 
 说明：
 
-- 当前完整 `go test ./...` 在这台开发机上仍会受本机 Application Control 策略影响，`internal/application/planner` 的临时测试二进制可能被拦截
-- 已确认与 Phase 4、Phase 5、Phase 6 直接相关的定向测试可以正常运行
+- 当前仓库尚未包含独立的 `tests/integration` 测试包；不要执行 `go test ./tests/integration/...`。
 
 ## Docker Compose 演示
 
@@ -255,18 +249,23 @@ go test ./tests/integration/...
 
 - `server`
 - `worker`
-- `prometheus`
+- `postgres`
 
 启动方式：
 
 ```bash
-docker compose -f deploy/docker-compose/docker-compose.yml up --build
+make init
+make up
 ```
 
 启动后可访问：
 
-- ADP Server: `http://127.0.0.1:8080`
-- Prometheus: `http://127.0.0.1:9090`
+- ADP Server: `http://127.0.0.1:18080`
+- Worker gRPC: `127.0.0.1:19090`
+
+常用命令：`make logs`、`make ps`、`make down`；`make clean` 会额外删除本地 PostgreSQL 数据卷。若端口冲突，可在 `deploy/docker-compose/.env` 设置 `ADP_HTTP_PORT`、`ADP_GRPC_PORT`。
+
+该 Compose 栈将 `configs/worker/services.cnf.example` 只读挂载给演示 Worker；生产环境必须替换为受保护的实际 `services.cnf`。
 
 ## GitHub PR CI/CD
 

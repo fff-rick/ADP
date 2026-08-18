@@ -21,6 +21,12 @@ type MemoryRepository struct {
 	messages       map[string][]model.ConversationMessage // keyed by conversationID
 	convIDSeq      atomic.Uint64
 	convMsgIDSeq   atomic.Int64
+	agentMu        sync.RWMutex
+	agentRuns      map[string]model.AgentRun
+	agentEvents    map[string][]model.AgentEvent
+	agentCalls     map[string]model.AgentToolCall
+	agentEventSeq  atomic.Int64
+	jobIdempotency map[string]string
 }
 
 // NewMemoryRepository creates a new in-memory repository.
@@ -30,6 +36,10 @@ func NewMemoryRepository() *MemoryRepository {
 		managedConfigs: make(map[string]model.ManagedConfig),
 		conversations:  make(map[string]model.Conversation),
 		messages:       make(map[string][]model.ConversationMessage),
+		agentRuns:      make(map[string]model.AgentRun),
+		agentEvents:    make(map[string][]model.AgentEvent),
+		agentCalls:     make(map[string]model.AgentToolCall),
+		jobIdempotency: make(map[string]string),
 	}
 }
 
@@ -124,6 +134,14 @@ func (r *MemoryRepository) DeleteWorker(id string) error {
 // ── Jobs ──
 
 func (r *MemoryRepository) CreateJob(job model.Job) (model.Job, error) {
+	if job.IdempotencyKey != "" {
+		r.agentMu.Lock()
+		if id := r.jobIdempotency[job.IdempotencyKey]; id != "" {
+			r.agentMu.Unlock()
+			return r.GetJob(id)
+		}
+		r.agentMu.Unlock()
+	}
 	opts := scheduler.CreateJobOptions{
 		Status:           job.Status,
 		RiskLevel:        job.RiskLevel,
@@ -137,6 +155,11 @@ func (r *MemoryRepository) CreateJob(job model.Job) (model.Job, error) {
 		AssignedWorkerID: job.AssignedWorkerID,
 	}
 	result := r.store.CreateJobWithOptions(job.Name, job.WorkerType, job.Command, opts)
+	if job.IdempotencyKey != "" {
+		r.agentMu.Lock()
+		r.jobIdempotency[job.IdempotencyKey] = result.ID
+		r.agentMu.Unlock()
+	}
 	return result, nil
 }
 
@@ -249,10 +272,17 @@ func (r *MemoryRepository) UpsertIncidentCase(planID string, c model.IncidentCas
 		TriggerType: c.TriggerType,
 	}
 	report := model.AnalysisReport{
-		FaultType:      c.FaultType,
-		PossibleCauses: c.PossibleCauses,
-		Suggestions:    c.Suggestions,
-		Confidence:     c.Confidence,
+		FaultType:        c.FaultType,
+		PossibleCauses:   c.PossibleCauses,
+		Suggestions:      c.Suggestions,
+		Confidence:       c.Confidence,
+		RawAnalysis:      c.EvidenceSummary,
+		AlertSymptoms:    c.AlertSymptoms,
+		EnvironmentTags:  c.EnvironmentTags,
+		EvidenceSummary:  c.EvidenceSummary,
+		RootCause:        c.RootCause,
+		ResolutionSteps:  c.ResolutionSteps,
+		ResolutionResult: c.ResolutionResult,
 	}
 	return r.store.UpsertIncidentCase(plan, report), nil
 }
@@ -425,6 +455,100 @@ func (r *MemoryRepository) ListConversationMessages(conversationID string) ([]mo
 		return []model.ConversationMessage{}, nil
 	}
 	return msgs, nil
+}
+
+// ── Agent runs ──
+func (r *MemoryRepository) CreateAgentRun(run model.AgentRun) (model.AgentRun, error) {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	if run.ID == "" {
+		run.ID = fmt.Sprintf("run-%06d", r.convIDSeq.Add(1))
+	}
+	now := time.Now()
+	run.CreatedAt, run.UpdatedAt = now, now
+	if run.Status == "" {
+		run.Status = model.AgentRunStatusQueued
+	}
+	if len(run.Transcript) == 0 {
+		run.Transcript = []byte("[]")
+	}
+	r.agentRuns[run.ID] = run
+	return run, nil
+}
+func (r *MemoryRepository) GetAgentRun(id string) (model.AgentRun, error) {
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	run, ok := r.agentRuns[id]
+	if !ok {
+		return model.AgentRun{}, errNotFound("agent run", id)
+	}
+	return run, nil
+}
+func (r *MemoryRepository) ListAgentRunsByStatus(statuses ...model.AgentRunStatus) ([]model.AgentRun, error) {
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	allowed := map[model.AgentRunStatus]bool{}
+	for _, status := range statuses {
+		allowed[status] = true
+	}
+	out := []model.AgentRun{}
+	for _, run := range r.agentRuns {
+		if allowed[run.Status] {
+			out = append(out, run)
+		}
+	}
+	return out, nil
+}
+func (r *MemoryRepository) UpdateAgentRun(run model.AgentRun) error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	if _, ok := r.agentRuns[run.ID]; !ok {
+		return errNotFound("agent run", run.ID)
+	}
+	run.UpdatedAt = time.Now()
+	r.agentRuns[run.ID] = run
+	return nil
+}
+func (r *MemoryRepository) AddAgentEvent(event model.AgentEvent) (model.AgentEvent, error) {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	event.ID = r.agentEventSeq.Add(1)
+	event.CreatedAt = time.Now()
+	r.agentEvents[event.RunID] = append(r.agentEvents[event.RunID], event)
+	return event, nil
+}
+func (r *MemoryRepository) ListAgentEvents(runID string, afterID int64) ([]model.AgentEvent, error) {
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	out := []model.AgentEvent{}
+	for _, e := range r.agentEvents[runID] {
+		if e.ID > afterID {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+func (r *MemoryRepository) CreateAgentToolCall(call model.AgentToolCall) error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	if _, ok := r.agentCalls[call.ID]; !ok {
+		call.CreatedAt = time.Now()
+		r.agentCalls[call.ID] = call
+	}
+	return nil
+}
+func (r *MemoryRepository) CompleteAgentToolCall(call model.AgentToolCall) error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	old, ok := r.agentCalls[call.ID]
+	if !ok {
+		return errNotFound("agent tool call", call.ID)
+	}
+	old.Result, old.Error, old.Status = call.Result, call.Error, call.Status
+	now := time.Now()
+	old.CompletedAt = &now
+	r.agentCalls[call.ID] = old
+	return nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

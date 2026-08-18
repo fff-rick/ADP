@@ -64,12 +64,66 @@ type Job struct {
 	Parameters       map[string]string `json:"parameters,omitempty"`
 	SourceType       string            `json:"source_type,omitempty"`
 	SourceID         string            `json:"source_id,omitempty"`
+	IdempotencyKey   string            `json:"-"`
 	AssignedWorkerID string            `json:"assigned_worker_id,omitempty"`
 	Output           string            `json:"output,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
 	StartedAt        *time.Time        `json:"started_at,omitempty"`
 	FinishedAt       *time.Time        `json:"finished_at,omitempty"`
+}
+
+// AgentRunStatus is the durable lifecycle of a controlled Agent execution.
+type AgentRunStatus string
+
+const (
+	AgentRunStatusQueued          AgentRunStatus = "queued"
+	AgentRunStatusRunning         AgentRunStatus = "running"
+	AgentRunStatusWaitingApproval AgentRunStatus = "waiting_approval"
+	AgentRunStatusCompleted       AgentRunStatus = "completed"
+	AgentRunStatusFailed          AgentRunStatus = "failed"
+	AgentRunStatusCancelled       AgentRunStatus = "cancelled"
+	AgentRunStatusTimedOut        AgentRunStatus = "timed_out"
+)
+
+// AgentRun stores the resumable transcript and immutable execution metadata.
+type AgentRun struct {
+	ID             string         `json:"id"`
+	Input          string         `json:"input"`
+	ConversationID string         `json:"conversation_id,omitempty"`
+	Status         AgentRunStatus `json:"status"`
+	TraceID        string         `json:"trace_id"`
+	PolicyVersion  string         `json:"policy_version"`
+	PromptVersion  string         `json:"prompt_version"`
+	Transcript     []byte         `json:"-"`
+	NextStep       int            `json:"next_step"`
+	Answer         string         `json:"answer,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+type AgentEvent struct {
+	ID        int64          `json:"id"`
+	RunID     string         `json:"run_id"`
+	Step      int            `json:"step"`
+	Type      string         `json:"type"`
+	Name      string         `json:"name,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+type AgentToolCall struct {
+	ID          string     `json:"id"`
+	RunID       string     `json:"run_id"`
+	Step        int        `json:"step"`
+	ToolName    string     `json:"tool_name"`
+	Arguments   []byte     `json:"arguments"`
+	Result      []byte     `json:"result,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 // RiskLevel represents the risk classification of a task.
@@ -163,15 +217,21 @@ type StepResult struct {
 
 // AnalysisReport is the AI-generated analysis of diagnosis results.
 type AnalysisReport struct {
-	PlanID          string         `json:"plan_id"`
-	FaultType       string         `json:"fault_type"`
-	PossibleCauses  []string       `json:"possible_causes"`
-	Suggestions     []string       `json:"suggestions"`
-	Confidence      float64        `json:"confidence"`
-	RawAnalysis     string         `json:"raw_analysis"`
-	ReferenceCases  []IncidentCase `json:"reference_cases,omitempty"`
-	HistoricalHints []string       `json:"historical_hints,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
+	PlanID           string         `json:"plan_id"`
+	FaultType        string         `json:"fault_type"`
+	PossibleCauses   []string       `json:"possible_causes"`
+	Suggestions      []string       `json:"suggestions"`
+	Confidence       float64        `json:"confidence"`
+	RawAnalysis      string         `json:"raw_analysis"`
+	ReferenceCases   []IncidentCase `json:"reference_cases,omitempty"`
+	HistoricalHints  []string       `json:"historical_hints,omitempty"`
+	CreatedAt        time.Time      `json:"created_at"`
+	AlertSymptoms    string         `json:"alert_symptoms,omitempty"`
+	EnvironmentTags  []string       `json:"environment_tags,omitempty"`
+	EvidenceSummary  string         `json:"evidence_summary,omitempty"`
+	RootCause        string         `json:"root_cause,omitempty"`
+	ResolutionSteps  []string       `json:"resolution_steps,omitempty"`
+	ResolutionResult string         `json:"resolution_result,omitempty"`
 }
 
 type AuditLog struct {
@@ -197,13 +257,23 @@ type IncidentCase struct {
 	SourcePlanID   string    `json:"source_plan_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+
+	// Structured historical knowledge. It must never be presented as a live
+	// observation of the host that is currently being diagnosed.
+	AlertSymptoms    string   `json:"alert_symptoms,omitempty"`
+	EnvironmentTags  []string `json:"environment_tags,omitempty"`
+	EvidenceSummary  string   `json:"evidence_summary,omitempty"`
+	RootCause        string   `json:"root_cause,omitempty"`
+	ResolutionSteps  []string `json:"resolution_steps,omitempty"`
+	ResolutionResult string   `json:"resolution_result,omitempty"`
 }
 
 type IncidentCaseFilter struct {
-	Query       string
-	TriggerType string
-	FaultType   string
-	Limit       int
+	Query           string
+	TriggerType     string
+	FaultType       string
+	EnvironmentTags []string
+	Limit           int
 }
 
 type MetricsSnapshot struct {

@@ -380,6 +380,24 @@ func (s *Store) UpsertIncidentCase(plan model.DiagnosisPlan, report model.Analys
 	incidentCase.PossibleCauses = cloneStrings(report.PossibleCauses)
 	incidentCase.Suggestions = cloneStrings(report.Suggestions)
 	incidentCase.Confidence = report.Confidence
+	incidentCase.AlertSymptoms = report.AlertSymptoms
+	incidentCase.EnvironmentTags = cloneStrings(report.EnvironmentTags)
+	incidentCase.EvidenceSummary = report.EvidenceSummary
+	incidentCase.RootCause = report.RootCause
+	incidentCase.ResolutionSteps = cloneStrings(report.ResolutionSteps)
+	incidentCase.ResolutionResult = report.ResolutionResult
+	if incidentCase.AlertSymptoms == "" {
+		incidentCase.AlertSymptoms = plan.Description
+	}
+	if incidentCase.EvidenceSummary == "" {
+		incidentCase.EvidenceSummary = report.RawAnalysis
+	}
+	if incidentCase.RootCause == "" {
+		incidentCase.RootCause = summarizeCase(report)
+	}
+	if len(incidentCase.ResolutionSteps) == 0 {
+		incidentCase.ResolutionSteps = cloneStrings(report.Suggestions)
+	}
 	incidentCase.SourcePlanID = plan.ID
 	incidentCase.UpdatedAt = now
 
@@ -510,6 +528,18 @@ func matchIncidentCase(incidentCase model.IncidentCase, filter model.IncidentCas
 	if filter.FaultType != "" && incidentCase.FaultType != filter.FaultType {
 		return false
 	}
+	for _, tag := range filter.EnvironmentTags {
+		found := false
+		for _, caseTag := range incidentCase.EnvironmentTags {
+			if strings.EqualFold(tag, caseTag) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
 	if filter.Query == "" {
 		return true
 	}
@@ -544,6 +574,12 @@ func incidentCaseSearchText(incidentCase model.IncidentCase) string {
 		incidentCase.TriggerType,
 		incidentCase.FaultType,
 		incidentCase.Summary,
+		incidentCase.AlertSymptoms,
+		strings.Join(incidentCase.EnvironmentTags, " "),
+		incidentCase.EvidenceSummary,
+		incidentCase.RootCause,
+		strings.Join(incidentCase.ResolutionSteps, " "),
+		incidentCase.ResolutionResult,
 		strings.Join(incidentCase.PossibleCauses, " "),
 		strings.Join(incidentCase.Suggestions, " "),
 	}

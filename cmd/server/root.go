@@ -61,7 +61,8 @@ func init() {
 	serveCmd.Flags().String("agent-api-key", "", "Agent model API key")
 	serveCmd.Flags().String("agent-model", "", "Agent model name")
 	serveCmd.Flags().Int("agent-max-steps", 20, "Maximum tool-calling steps per Agent run")
-	serveCmd.Flags().Bool("agent-allow-shell", false, "Allow Agent to execute shell commands directly (high-risk mode)")
+	serveCmd.Flags().Float64("agent-input-token-cost-usd-per-1k", 0, "Model input-token cost estimate in USD per 1K tokens")
+	serveCmd.Flags().Float64("agent-output-token-cost-usd-per-1k", 0, "Model output-token cost estimate in USD per 1K tokens")
 	serveCmd.Flags().String("managed-config-dir", "configs/managed", "Source-controlled managed YAML configuration directory")
 	serveCmd.Flags().String("managed-config-sync-mode", "missing", "Managed config sync mode: missing or enforce")
 	serveCmd.Flags().String("config", "", "Path to YAML config file")
@@ -79,7 +80,8 @@ func init() {
 	_ = viper.BindPFlag("agent.api_key", serveCmd.Flags().Lookup("agent-api-key"))
 	_ = viper.BindPFlag("agent.model", serveCmd.Flags().Lookup("agent-model"))
 	_ = viper.BindPFlag("agent.max_steps", serveCmd.Flags().Lookup("agent-max-steps"))
-	_ = viper.BindPFlag("agent.allow_shell", serveCmd.Flags().Lookup("agent-allow-shell"))
+	_ = viper.BindPFlag("agent.input_token_cost_usd_per_1k", serveCmd.Flags().Lookup("agent-input-token-cost-usd-per-1k"))
+	_ = viper.BindPFlag("agent.output_token_cost_usd_per_1k", serveCmd.Flags().Lookup("agent-output-token-cost-usd-per-1k"))
 	_ = viper.BindPFlag("managed_config_dir", serveCmd.Flags().Lookup("managed-config-dir"))
 	_ = viper.BindPFlag("managed_config_sync_mode", serveCmd.Flags().Lookup("managed-config-sync-mode"))
 
@@ -192,20 +194,21 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	cfg := config.ServerConfig{
-		Addr:                  viper.GetString("addr"),
-		WorkerGRPCAddr:        viper.GetString("worker.grpc_addr"),
-		DBDSN:                 viper.GetString("db.dsn"),
-		AdminUsername:         viper.GetString("auth.admin_username"),
-		AdminPassword:         viper.GetString("auth.admin_password"),
-		AuthSecret:            viper.GetString("auth.secret"),
-		WorkerSharedToken:     viper.GetString("auth.worker_token"),
-		LLMBaseURL:            viper.GetString("agent.base_url"),
-		LLMAPIKey:             viper.GetString("agent.api_key"),
-		LLMModel:              viper.GetString("agent.model"),
-		AgentMaxSteps:         viper.GetInt("agent.max_steps"),
-		AgentAllowShell:       viper.GetBool("agent.allow_shell"),
-		ManagedConfigDir:      viper.GetString("managed_config_dir"),
-		ManagedConfigSyncMode: viper.GetString("managed_config_sync_mode"),
+		Addr:                         viper.GetString("addr"),
+		WorkerGRPCAddr:               viper.GetString("worker.grpc_addr"),
+		DBDSN:                        viper.GetString("db.dsn"),
+		AdminUsername:                viper.GetString("auth.admin_username"),
+		AdminPassword:                viper.GetString("auth.admin_password"),
+		AuthSecret:                   viper.GetString("auth.secret"),
+		WorkerSharedToken:            viper.GetString("auth.worker_token"),
+		LLMBaseURL:                   viper.GetString("agent.base_url"),
+		LLMAPIKey:                    viper.GetString("agent.api_key"),
+		LLMModel:                     viper.GetString("agent.model"),
+		AgentMaxSteps:                viper.GetInt("agent.max_steps"),
+		AgentInputTokenCostUSDPer1K:  viper.GetFloat64("agent.input_token_cost_usd_per_1k"),
+		AgentOutputTokenCostUSDPer1K: viper.GetFloat64("agent.output_token_cost_usd_per_1k"),
+		ManagedConfigDir:             viper.GetString("managed_config_dir"),
+		ManagedConfigSyncMode:        viper.GetString("managed_config_sync_mode"),
 	}
 	if err := validateRuntimeConfig(cfg); err != nil {
 		return err
@@ -237,18 +240,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// Create the HTTP server using the existing API.
 	svr := api.NewServer(api.Config{
-		Addr:                  cfg.Addr,
-		AdminUsername:         cfg.AdminUsername,
-		AdminPassword:         cfg.AdminPassword,
-		AuthSecret:            cfg.AuthSecret,
-		WorkerSharedToken:     cfg.WorkerSharedToken,
-		LLMBaseURL:            cfg.LLMBaseURL,
-		LLMAPIKey:             cfg.LLMAPIKey,
-		LLMModel:              cfg.LLMModel,
-		AgentMaxSteps:         cfg.AgentMaxSteps,
-		AgentAllowShell:       cfg.AgentAllowShell,
-		ManagedConfigDir:      cfg.ManagedConfigDir,
-		ManagedConfigSyncMode: cfg.ManagedConfigSyncMode,
+		Addr:                         cfg.Addr,
+		AdminUsername:                cfg.AdminUsername,
+		AdminPassword:                cfg.AdminPassword,
+		AuthSecret:                   cfg.AuthSecret,
+		WorkerSharedToken:            cfg.WorkerSharedToken,
+		LLMBaseURL:                   cfg.LLMBaseURL,
+		LLMAPIKey:                    cfg.LLMAPIKey,
+		LLMModel:                     cfg.LLMModel,
+		AgentMaxSteps:                cfg.AgentMaxSteps,
+		AgentInputTokenCostUSDPer1K:  cfg.AgentInputTokenCostUSDPer1K,
+		AgentOutputTokenCostUSDPer1K: cfg.AgentOutputTokenCostUSDPer1K,
+		ManagedConfigDir:             cfg.ManagedConfigDir,
+		ManagedConfigSyncMode:        cfg.ManagedConfigSyncMode,
 	}, repo, authService)
 
 	grpcListener, err := net.Listen("tcp", cfg.WorkerGRPCAddr)

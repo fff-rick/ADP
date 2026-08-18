@@ -17,4 +17,6 @@ agent:
   api_key: ""
   model: "gpt-4"
   max_steps: 20
-  allow_shell: false
+  # Set these from the deployed model's current pricing; zero disables cost estimation.
+  input_token_cost_usd_per_1k: 0
+  output_token_cost_usd_per_1k: 0

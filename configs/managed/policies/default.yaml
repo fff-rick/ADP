@@ -31,6 +31,10 @@ allowed_templates:
   - redis_info
   - redis_slowlog_get
   - redis_client_list
+  - nginx_config_test
+  - nginx_http_local_check
+  - nginx_error_log_tail
+  - nginx_listening_ports
   - host_diagnostics
   - restart_service
   - service_status

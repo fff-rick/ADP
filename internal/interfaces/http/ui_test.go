@@ -40,6 +40,12 @@ func TestDashboardUIRoutesAndSummary(t *testing.T) {
 		if route != "/login" && !strings.Contains(string(body), "href=\"/configs\"") {
 			t.Fatalf("ui page missing configs navigation for %s", route)
 		}
+		if route == "/tasks" && !strings.Contains(string(body), "agent-run-monitor") {
+			t.Fatalf("tasks page missing Agent run monitor")
+		}
+		if route == "/tasks" && !strings.Contains(string(body), "历史案例仅供参考") {
+			t.Fatalf("tasks page missing historical-case provenance notice")
+		}
 	}
 
 	staticResp, err := app.Client().Get(app.URL + "/static/app.css")
@@ -49,6 +55,15 @@ func TestDashboardUIRoutesAndSummary(t *testing.T) {
 	defer staticResp.Body.Close() //nolint:errcheck
 	if staticResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /static/app.css status = %d, want %d", staticResp.StatusCode, http.StatusOK)
+	}
+	staticJSResp, err := app.Client().Get(app.URL + "/static/app.js")
+	if err != nil {
+		t.Fatalf("GET /static/app.js error = %v", err)
+	}
+	jsBody, _ := io.ReadAll(staticJSResp.Body)
+	staticJSResp.Body.Close() //nolint:errcheck
+	if staticJSResp.StatusCode != http.StatusOK || !strings.Contains(string(jsBody), "refreshAgentRunMonitor") || !strings.Contains(string(jsBody), "renderHistoricalReferences") {
+		t.Fatalf("Agent run monitor client script unavailable")
 	}
 
 	token, _, err := server.authService.Login("admin", "admin123")

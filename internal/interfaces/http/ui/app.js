@@ -31,6 +31,10 @@ const elements = {
   taskOutput: byId("task-output"),
   taskList: byId("task-list"),
   agentTimeline: byId("agent-timeline"),
+  agentRunMonitor: byId("agent-run-monitor"),
+  agentRunSummary: byId("agent-run-summary"),
+  agentRunEvents: byId("agent-run-events"),
+  runReplayButton: byId("run-replay-button"),
   templateList: byId("template-list"),
   configForm: byId("config-form"),
   configKind: byId("config-kind"),
@@ -112,6 +116,8 @@ function bindCommonEvents() {
   elements.configRefresh && elements.configRefresh.addEventListener("click", refreshConfigsPage);
   elements.configList && elements.configList.addEventListener("click", handleConfigListAction);
   elements.approvalList && elements.approvalList.addEventListener("click", handleApprovalAction);
+  elements.runReplayButton && elements.runReplayButton.addEventListener("click", function() { replayAgentRunEvents(true); });
+  elements.agentRunMonitor && elements.agentRunMonitor.addEventListener("click", handleAgentRunAction);
   var conversationMessages = document.getElementById("conversation-messages");
   conversationMessages && conversationMessages.addEventListener("click", handleConversationAction);
   elements.themeToggle && elements.themeToggle.addEventListener("click", toggleTheme);
@@ -587,6 +593,22 @@ async function refreshYAMLList() {
 }
 
 var currentConversationID = "";
+var currentRunID = "";
+
+function runStorageKey(conversationID) {
+  return "adp.agent.run." + (conversationID || "new");
+}
+
+function rememberRun(run) {
+  if (!run || !run.id) return;
+  currentRunID = run.id;
+  var key = runStorageKey(run.conversation_id || currentConversationID);
+  window.localStorage.setItem(key, run.id);
+}
+
+function restoreRememberedRun() {
+  currentRunID = window.localStorage.getItem(runStorageKey(currentConversationID)) || "";
+}
 
 async function handleTaskSubmit(event) {
   event.preventDefault();
@@ -670,6 +692,9 @@ async function handleTaskSubmit(event) {
             toolDiv.innerHTML = '<summary style="cursor:pointer;color:var(--text-tertiary);">🔧 ' + escapeHTML(ev.name || "") + '</summary>' +
               '<pre class="code-block" style="margin:2px 0 0;max-height:80px;font-size:.625rem;">' + escapeHTML(toolData) + '</pre>';
             toolList.appendChild(toolDiv);
+            if (ev.name === "search_incident_cases") {
+              agentContent && agentContent.appendChild(renderHistoricalReferences(ev.data));
+            }
           } else if (ev.type === "assistant" && ev.data) {
             // Show thinking text dimmed.
             var think = document.createElement("div");
@@ -682,6 +707,7 @@ async function handleTaskSubmit(event) {
             if (finalData.conversation_id && !currentConversationID) {
               currentConversationID = finalData.conversation_id;
             }
+            if (finalData.run) rememberRun(finalData.run);
             pendingApprovals = finalData.pending_approvals || null;
           }
         } catch (_) {}
@@ -710,6 +736,7 @@ async function handleTaskSubmit(event) {
 
   // Show pending approvals.
   window._adpPendingApprovals = pendingApprovals;
+  await refreshAgentRunMonitor();
   if (pendingApprovals && pendingApprovals.length > 0) {
     showToast("Agent 等待审批 " + pendingApprovals.length + " 个操作");
     await refreshTasksPage();
@@ -735,20 +762,9 @@ async function handleBatchApproval(approvals, approved) {
     } catch (e) { showToast("审批失败: " + e.message); return; }
   }
 
-  var verb = approved ? "已批准" : "已拒绝";
-  var jobIds = approvals.map(function(a) { return a.job_id; }).join(", ");
-  var followUp = verb + " Job " + jobIds + "。请检查执行结果并继续。";
-  showToast(verb + "，Agent 继续执行…");
-
-  // Directly call agent API for continuation.
-  var indicator = document.getElementById("agent-running-indicator");
-  if (indicator) indicator.style.display = "flex";
-  try {
-    var body = { input: followUp };
-    if (currentConversationID) body.conversation_id = currentConversationID;
-    await authedRequest("/api/v1/agent/runs", { method: "POST", body: JSON.stringify(body) });
-  } catch (_) {}
-  if (indicator) indicator.style.display = "none";
+  showToast(approved ? "已批准，服务端正在恢复该 run…" : "已拒绝，关联 run 已取消");
+  await refreshAgentRunMonitor();
+  if (approved) window.setTimeout(refreshAgentRunMonitor, 800);
   await refreshTasksPage();
 }
 
@@ -774,11 +790,13 @@ async function loadConversations() {
 
 async function selectConversation(id) {
   currentConversationID = id;
+  restoreRememberedRun();
   await refreshTasksPage();
 }
 
 function startNewConversation() {
   currentConversationID = "";
+  currentRunID = "";
   var msgEl = document.getElementById("conversation-messages");
   if (msgEl) msgEl.innerHTML = '<p style="color:var(--text-tertiary);text-align:center;padding:20px;">开始新对话</p>';
   var titleEl = document.getElementById("conv-title-text");
@@ -840,6 +858,79 @@ function markdownToHTML(text) {
   return html;
 }
 
+// Historical cases have a different provenance from a tool observation. Render
+// them as structured, explicitly non-live references rather than raw JSON.
+function renderHistoricalReferences(toolData) {
+  var payload = toolData && (toolData.result || toolData);
+  var cases = payload && Array.isArray(payload.cases) ? payload.cases : [];
+  var section = document.createElement("section");
+  section.className = "historical-references";
+  section.setAttribute("aria-label", "历史参考案例");
+
+  var heading = document.createElement("div");
+  heading.className = "historical-references-heading";
+  heading.textContent = "历史参考案例";
+  var disclaimer = document.createElement("p");
+  disclaimer.className = "historical-references-disclaimer";
+  disclaimer.textContent = "仅供排查与处置参考；必须通过本次工具证据确认，不代表当前环境事实。";
+  section.appendChild(heading);
+  section.appendChild(disclaimer);
+
+  if (!cases.length) {
+    var empty = document.createElement("p");
+    empty.className = "historical-references-empty";
+    empty.textContent = "未检索到匹配的历史案例。";
+    section.appendChild(empty);
+    return section;
+  }
+
+  cases.forEach(function(item) {
+    var card = document.createElement("article");
+    card.className = "historical-reference-card";
+    var source = document.createElement("code");
+    source.className = "historical-reference-source";
+    source.textContent = "来源 " + String(item.source_id || "未知");
+    card.appendChild(source);
+    appendHistoricalField(card, "告警症状", item.alert_symptoms);
+    appendHistoricalTags(card, item.environment_tags);
+    appendHistoricalField(card, "证据摘要", item.evidence_summary);
+    appendHistoricalField(card, "历史根因", item.root_cause);
+    appendHistoricalSteps(card, item.resolution_steps);
+    appendHistoricalField(card, "处置结果", item.resolution_result);
+    section.appendChild(card);
+  });
+  return section;
+}
+
+function appendHistoricalField(parent, label, value) {
+  if (!value) return;
+  var row = document.createElement("div");
+  row.className = "historical-reference-field";
+  var key = document.createElement("span");
+  key.textContent = label;
+  var content = document.createElement("p");
+  content.textContent = String(value);
+  row.appendChild(key); row.appendChild(content); parent.appendChild(row);
+}
+
+function appendHistoricalTags(parent, tags) {
+  if (!Array.isArray(tags) || !tags.length) return;
+  var row = document.createElement("div");
+  row.className = "historical-reference-tags";
+  tags.forEach(function(tag) { var chip = document.createElement("span"); chip.textContent = String(tag); row.appendChild(chip); });
+  parent.appendChild(row);
+}
+
+function appendHistoricalSteps(parent, steps) {
+  if (!Array.isArray(steps) || !steps.length) return;
+  var row = document.createElement("div");
+  row.className = "historical-reference-field";
+  var key = document.createElement("span"); key.textContent = "历史处置";
+  var list = document.createElement("ol");
+  steps.forEach(function(step) { var item = document.createElement("li"); item.textContent = String(step); list.appendChild(item); });
+  row.appendChild(key); row.appendChild(list); parent.appendChild(row);
+}
+
 async function renderConversationMessages() {
   var msgEl = document.getElementById("conversation-messages");
   if (!msgEl || !currentConversationID) return;
@@ -856,6 +947,9 @@ async function renderConversationMessages() {
           '<summary>🔧 ' + escapeHTML(m.tool_name || "tool") + '</summary>' +
           '<pre class="code-block" style="margin:4px 0 0;max-height:100px;font-size:.625rem;text-align:left;">' + escapeHTML(JSON.stringify(m.tool_data, null, 2)) + '</pre></details>';
         msgEl.appendChild(tdiv);
+        if (m.tool_name === "search_incident_cases") {
+          msgEl.appendChild(renderHistoricalReferences(m.tool_data));
+        }
       } else if (m.role === "user") {
         // User: right-aligned bubble
         var row = document.createElement("div");
@@ -957,19 +1051,9 @@ async function handleConversationApproval(jobID, approved) {
     });
   } catch (e) { showToast("审批失败: " + e.message); return; }
 
-  var verb = approved ? "已批准" : "已拒绝";
-  showToast(verb + "，Agent 继续执行…");
-
-  // Auto-continue in same conversation.
-  var followUp = verb + " Job " + jobID + "。请检查执行结果并继续。";
-  var indicator = document.getElementById("agent-running-indicator");
-  if (indicator) indicator.style.display = "flex";
-  try {
-    var body = { input: followUp };
-    if (currentConversationID) body.conversation_id = currentConversationID;
-    await authedRequest("/api/v1/agent/runs", { method: "POST", body: JSON.stringify(body) });
-  } catch (_) {}
-  if (indicator) indicator.style.display = "none";
+  showToast(approved ? "已批准，服务端正在恢复该 run…" : "已拒绝，关联 run 已取消");
+  await refreshAgentRunMonitor();
+  if (approved) window.setTimeout(refreshAgentRunMonitor, 800);
   await refreshTasksPage();
 }
 
@@ -1030,6 +1114,98 @@ function renderAgentTimeline(events) {
     detail.textContent = typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2);
     item.appendChild(title); item.appendChild(detail); elements.agentTimeline.appendChild(item);
   });
+}
+
+function agentRunStatusClass(status) {
+  return statusClass(String(status || "").replace(/_/g, "-"));
+}
+
+function setRunMonitorEmpty(message) {
+  if (elements.agentRunSummary) {
+    elements.agentRunSummary.className = "run-monitor-empty";
+    elements.agentRunSummary.textContent = message;
+  }
+  if (elements.agentRunEvents) elements.agentRunEvents.innerHTML = "";
+  if (elements.runReplayButton) elements.runReplayButton.disabled = true;
+}
+
+function renderAgentRun(run) {
+  if (!run || !elements.agentRunSummary) return;
+  rememberRun(run);
+  var cancellable = ["queued", "waiting_approval"].indexOf(run.status) >= 0;
+  elements.agentRunSummary.className = "run-summary";
+  elements.agentRunSummary.innerHTML =
+    '<div class="run-summary-row"><span class="run-summary-key">状态</span><span class="status-pill ' + agentRunStatusClass(run.status) + '"><span class="status-dot"></span>' + escapeHTML(run.status) + '</span></div>' +
+    '<div class="run-summary-row"><span class="run-summary-key">Run</span><span class="run-summary-value" title="' + escapeHTML(run.id) + '">' + escapeHTML(run.id) + '</span></div>' +
+    '<div class="run-summary-row"><span class="run-summary-key">Trace</span><span class="run-summary-value" title="' + escapeHTML(run.trace_id || "") + '">' + escapeHTML(run.trace_id || "--") + '</span></div>' +
+    '<div class="run-summary-row"><span class="run-summary-key">策略 / Prompt</span><span class="run-summary-value" title="' + escapeHTML((run.policy_version || "") + " / " + (run.prompt_version || "")) + '">' + escapeHTML((run.policy_version || "--") + " / " + (run.prompt_version || "--")) + '</span></div>' +
+    (run.error ? '<div class="run-summary-row"><span class="run-summary-key">错误</span><span class="run-summary-value" title="' + escapeHTML(run.error) + '">' + escapeHTML(run.error) + '</span></div>' : "") +
+    (cancellable ? '<button class="btn btn-xs btn-ghost" type="button" data-agent-run-action="cancel" style="color:var(--danger);margin-top:3px;">取消运行</button>' : "");
+  if (elements.runReplayButton) elements.runReplayButton.disabled = false;
+}
+
+function renderAgentRunEvents(events) {
+  if (!elements.agentRunEvents) return;
+  if (!events || events.length === 0) {
+    elements.agentRunEvents.innerHTML = '<div class="run-monitor-empty">暂无持久化事件。</div>';
+    return;
+  }
+  elements.agentRunEvents.innerHTML = "";
+  events.forEach(function(event) {
+    var item = document.createElement("div");
+    item.className = "run-event" + (event.type === "tool" ? " is-tool" : "");
+    var label = "步骤 " + event.step + " · " + (event.type === "tool" ? "工具 " + (event.name || "--") : event.type);
+    var detail = event.data && event.data.content ? String(event.data.content) : (event.data ? JSON.stringify(event.data) : "");
+    item.innerHTML = '<div class="run-event-title">' + escapeHTML(label) + '<span class="run-event-safety">安全视图</span></div><div>' + escapeHTML(detail).slice(0, 180) + '</div>';
+    elements.agentRunEvents.appendChild(item);
+  });
+}
+
+async function replayAgentRunEvents(showToastOnSuccess) {
+  if (!currentRunID || !state.token) return;
+  try {
+    var response = await fetch("/api/v1/agent/runs/" + encodeURIComponent(currentRunID) + "/events", {
+      headers: { "Authorization": "Bearer " + state.token },
+    });
+    if (!response.ok) throw new Error("事件重放失败: " + response.status);
+    var raw = await response.text();
+    var events = [];
+    raw.split("\n\n").forEach(function(block) {
+      var dataLine = block.split("\n").filter(function(line) { return line.indexOf("data: ") === 0; })[0];
+      if (!dataLine) return;
+      try { events.push(JSON.parse(dataLine.slice(6))); } catch (_) {}
+    });
+    renderAgentRunEvents(events);
+    if (showToastOnSuccess) showToast("已重放 " + events.length + " 条运行事件");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function refreshAgentRunMonitor() {
+  if (!elements.agentRunMonitor || !state.token) return;
+  if (!currentRunID) restoreRememberedRun();
+  if (!currentRunID) { setRunMonitorEmpty("提交任务后显示状态、追踪信息与恢复进度。"); return; }
+  try {
+    var run = await authedRequest("/api/v1/agent/runs/" + encodeURIComponent(currentRunID));
+    renderAgentRun(run);
+    await replayAgentRunEvents(false);
+  } catch (error) {
+    currentRunID = "";
+    setRunMonitorEmpty("未找到已保存的运行记录。");
+  }
+}
+
+async function handleAgentRunAction(event) {
+  var button = event.target.closest("[data-agent-run-action]");
+  if (!button || button.dataset.agentRunAction !== "cancel" || !currentRunID) return;
+  if (!window.confirm("取消此 Agent run？已创建的任务不会被删除。")) return;
+  try {
+    var run = await authedRequest("/api/v1/agent/runs/" + encodeURIComponent(currentRunID) + "/cancel", { method: "POST" });
+    renderAgentRun(run);
+    await replayAgentRunEvents(false);
+    showToast("运行已取消");
+  } catch (error) { showToast(error.message); }
 }
 
 function renderAgentTimeline(events) {
@@ -1309,6 +1485,7 @@ async function refreshTasksPage() {
 
   await loadConversations();
   await renderConversationMessages();
+  await refreshAgentRunMonitor();
 
   var titleEl = document.getElementById("conv-title-text");
   if (titleEl && currentConversationID) {
@@ -1485,11 +1662,19 @@ async function handleDeleteWorkerById(workerId) {
 function renderSummaryMetrics(summary) {
   if (!elements.metricsGrid) return;
 
+  var agent = summary.agent_metrics || {};
+  var percentage = function(value) { return (Number(value || 0) * 100).toFixed(1) + "%"; };
+  var seconds = function(value) { return Number(value || 0).toFixed(2) + "s"; };
   var metrics = [
     ["在线 Workers", summary.metrics.workers_online, summary.workers.length + " 个已注册"],
     ["Jobs 总数", summary.metrics.jobs_total, summary.metrics.jobs_success + " 成功 / " + summary.metrics.jobs_failed + " 失败"],
     ["待审批", summary.metrics.jobs_waiting_approval, "等待人工确认"],
     ["受控能力", summary.templates_total, "YAML 模板 (动态加载)"],
+    ["Agent 成功率", percentage(agent.run_success_rate), "已完成受控运行"],
+    ["策略拒绝", agent.policy_rejections || 0, "越权与不安全调用"],
+    ["平均步骤", Number(agent.avg_steps || 0).toFixed(1), "每次 Agent run"],
+    ["模型 / 工具延迟", seconds(agent.model_latency_seconds) + " / " + seconds(agent.tool_latency_seconds), "平均调用耗时"],
+    ["Token 成本", "$" + Number(agent.token_cost_usd || 0).toFixed(4), (agent.total_tokens || 0) + " tokens"],
   ];
 
   elements.metricsGrid.innerHTML = metrics.map(function(m) {

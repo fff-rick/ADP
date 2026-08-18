@@ -25,18 +25,19 @@ import (
 )
 
 type Config struct {
-	Addr                  string
-	AdminUsername         string
-	AdminPassword         string
-	AuthSecret            string
-	WorkerSharedToken     string
-	LLMBaseURL            string
-	LLMAPIKey             string
-	LLMModel              string
-	AgentMaxSteps         int
-	AgentAllowShell       bool
-	ManagedConfigDir      string
-	ManagedConfigSyncMode string
+	Addr                         string
+	AdminUsername                string
+	AdminPassword                string
+	AuthSecret                   string
+	WorkerSharedToken            string
+	LLMBaseURL                   string
+	LLMAPIKey                    string
+	LLMModel                     string
+	AgentMaxSteps                int
+	AgentInputTokenCostUSDPer1K  float64
+	AgentOutputTokenCostUSDPer1K float64
+	ManagedConfigDir             string
+	ManagedConfigSyncMode        string
 }
 
 // HasLLM returns true if an LLM is configured.
@@ -52,6 +53,7 @@ type Server struct {
 	workerHub    *workerstream.Hub
 	llmClient    llm.Client
 	agentRuntime *agent.Runtime
+	agentMetrics *agentMetrics
 	httpServer   *http.Server
 }
 
@@ -80,16 +82,18 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	}
 
 	server := &Server{
-		config:      cfg,
-		repo:        repo,
-		authService: authSvc,
-		templateEng: templateEng,
-		policyEng:   policyEng,
-		moduleReg:   moduleReg,
-		workerHub:   workerstream.NewHub(),
-		llmClient:   llmClient,
+		config:       cfg,
+		repo:         repo,
+		authService:  authSvc,
+		templateEng:  templateEng,
+		policyEng:    policyEng,
+		moduleReg:    moduleReg,
+		workerHub:    workerstream.NewHub(),
+		llmClient:    llmClient,
+		agentMetrics: &agentMetrics{inputTokenCostPer1K: cfg.AgentInputTokenCostUSDPer1K, outputTokenCostPer1K: cfg.AgentOutputTokenCostUSDPer1K},
 	}
 	server.agentRuntime = agent.New(llmClient, server.agentTools(), cfg.AgentMaxSteps, 0)
+	go server.resumeInterruptedAgentRuns()
 
 	if _, err := server.syncManagedConfigs(cfg.ManagedConfigDir, cfg.ManagedConfigSyncMode == "enforce"); err != nil {
 		log.Printf("WARNING: failed to bootstrap managed configs: %v", err)
@@ -140,6 +144,8 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	mux.HandleFunc("PUT /api/v1/workers/", server.withWorkerAuth(server.handleWorkerActions))
 	// Controlled operations agent.
 	mux.HandleFunc("POST /api/v1/agent/runs", server.withUserAuth(server.handleAgentRun))
+	mux.HandleFunc("GET /api/v1/agent/runs/", server.withUserAuth(server.handleGetAgentRun))
+	mux.HandleFunc("POST /api/v1/agent/runs/", server.withUserAuth(server.handleGetAgentRun))
 	// Conversations
 	mux.HandleFunc("GET /api/v1/conversations", server.withUserAuth(server.handleListConversations))
 	mux.HandleFunc("POST /api/v1/conversations", server.withUserAuth(server.handleCreateConversation))
@@ -168,6 +174,21 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	}
 
 	return server
+}
+
+// resumeInterruptedAgentRuns only runs at server construction time. Waiting
+// approvals intentionally remain paused until an explicit approval action.
+func (s *Server) resumeInterruptedAgentRuns() {
+	runs, err := s.repo.ListAgentRunsByStatus(model.AgentRunStatusQueued, model.AgentRunStatusRunning)
+	if err != nil {
+		log.Printf("agent run recovery scan failed: %v", err)
+		return
+	}
+	for _, run := range runs {
+		if _, _, err := s.executePersistentRun(context.Background(), run.ID); err != nil {
+			log.Printf("agent run recovery failed for %s: %v", run.ID, err)
+		}
+	}
 }
 
 type managedConfigSyncReport struct {

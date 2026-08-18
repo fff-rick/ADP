@@ -6,6 +6,59 @@ import (
 	"strings"
 )
 
+const MaxSafeTextLength = 4096
+
+var secretValuePattern = regexp.MustCompile(`(?i)(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)\s*(?:=|:|\s)\s*(?:bearer\s+)?[^\s,;]+`)
+
+// SanitizeText protects Agent transcripts, audit records and SSE payloads from
+// credentials while keeping enough context for operators to diagnose failures.
+func SanitizeText(value string) string {
+	value = secretValuePattern.ReplaceAllString(value, "[REDACTED]")
+	if len(value) > MaxSafeTextLength {
+		return value[:MaxSafeTextLength] + "…[truncated]"
+	}
+	return value
+}
+
+// SanitizeMap recursively produces a safe, size-bounded copy for persistence
+// and presentation. Values with sensitive field names are never retained.
+func SanitizeMap(value map[string]any) map[string]any {
+	result := make(map[string]any, len(value))
+	for key, item := range value {
+		result[key] = sanitizeValue(key, item)
+	}
+	return result
+}
+
+func sanitizeValue(key string, value any) any {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
+	for _, word := range []string{"password", "passwd", "secret", "token", "apikey", "privatekey", "authorization", "dsn", "connectionstring", "connectionurl"} {
+		if strings.Contains(normalized, word) {
+			return "[REDACTED]"
+		}
+	}
+	switch v := value.(type) {
+	case string:
+		return SanitizeText(v)
+	case map[string]any:
+		return SanitizeMap(v)
+	case []map[string]any:
+		out := make([]map[string]any, len(v))
+		for i := range v {
+			out[i] = SanitizeMap(v[i])
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i := range v {
+			out[i] = sanitizeValue("", v[i])
+		}
+		return out
+	default:
+		return value
+	}
+}
+
 var serviceProfilePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // ValidateServiceProfile ensures the control plane can reference only a

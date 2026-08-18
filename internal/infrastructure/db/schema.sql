@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     parameters          JSONB NOT NULL DEFAULT '{}',
     source_type         VARCHAR(64) NOT NULL DEFAULT '',
     source_id           VARCHAR(64) NOT NULL DEFAULT '',
+	 idempotency_key     VARCHAR(256) NOT NULL DEFAULT '',
     assigned_worker_id  VARCHAR(64) NOT NULL DEFAULT '',
     output              TEXT NOT NULL DEFAULT '',
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -53,6 +54,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS parameters JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(256) NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key ON jobs(idempotency_key) WHERE idempotency_key <> '';
 
 -- 诊断计划表
 CREATE TABLE IF NOT EXISTS diagnosis_plans (
@@ -92,6 +95,18 @@ CREATE TABLE IF NOT EXISTS incident_cases (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Iteration 3: normalized historical operations knowledge. Legacy columns
+-- remain during migration so old reports and API consumers continue to work.
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS alert_symptoms TEXT NOT NULL DEFAULT '';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS environment_tags TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS evidence_summary TEXT NOT NULL DEFAULT '';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS root_cause TEXT NOT NULL DEFAULT '';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS resolution_steps TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS resolution_result TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_incident_cases_trigger_type ON incident_cases(trigger_type);
+CREATE INDEX IF NOT EXISTS idx_incident_cases_fault_type ON incident_cases(fault_type);
+CREATE INDEX IF NOT EXISTS idx_incident_cases_environment_tags ON incident_cases USING GIN(environment_tags);
 
 -- Job YAML 模板表
 CREATE TABLE IF NOT EXISTS job_yamls (
@@ -167,3 +182,45 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_conv_msgs_cid ON conversation_messages(conversation_id, id);
+
+-- Durable Agent execution ledger. Transcript contains only LLM protocol messages;
+-- events and tool calls remain separately queryable for replay and audit.
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id VARCHAR(64) PRIMARY KEY,
+    input TEXT NOT NULL,
+    conversation_id VARCHAR(64) NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL,
+    trace_id VARCHAR(128) NOT NULL,
+    policy_version VARCHAR(128) NOT NULL,
+    prompt_version VARCHAR(128) NOT NULL,
+    transcript JSONB NOT NULL DEFAULT '[]',
+    next_step INTEGER NOT NULL DEFAULT 1,
+    answer TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_status ON agent_runs(status);
+CREATE TABLE IF NOT EXISTS agent_events (
+    id BIGSERIAL PRIMARY KEY,
+    run_id VARCHAR(64) NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    step INTEGER NOT NULL DEFAULT 0,
+    type VARCHAR(64) NOT NULL,
+    name VARCHAR(128) NOT NULL DEFAULT '',
+    data JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_events_run_id ON agent_events(run_id, id);
+CREATE TABLE IF NOT EXISTS agent_tool_calls (
+    id VARCHAR(128) PRIMARY KEY,
+    run_id VARCHAR(64) NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    step INTEGER NOT NULL,
+    tool_name VARCHAR(128) NOT NULL,
+    arguments JSONB NOT NULL DEFAULT '{}',
+    result JSONB NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_run_id ON agent_tool_calls(run_id, step);

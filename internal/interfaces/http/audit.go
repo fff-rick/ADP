@@ -28,7 +28,7 @@ func (s *Server) recordAudit(actorType, actorID, action, resourceType, resourceI
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
-		Details:      details,
+		Details:      model.SanitizeMap(details),
 		CreatedAt:    time.Now(),
 	}
 	if s.repo != nil {
@@ -40,7 +40,7 @@ func (s *Server) recordAudit(actorType, actorID, action, resourceType, resourceI
 		"resource_id":   resourceID,
 		"resource_type": resourceType,
 	}
-	for key, value := range details {
+	for key, value := range entry.Details {
 		fields[key] = value
 	}
 	logEvent("audit", action, fields)

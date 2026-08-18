@@ -65,15 +65,16 @@
 - 审计日志为必选项
 - Worker 权限应遵循最小权限原则
 
-## 技术栈决策
+## 当前技术栈
 
-- Go `1.24.x`：后端服务开发语言
-- Gin `1.10.x`：HTTP API 框架
-- gRPC `1.70.x`：服务端与 Worker 通信
-- MySQL `8.0.x`：持久化元数据存储
-- Redis `7.2.x`：队列与缓存
+- Go `1.25.x`：后端服务开发语言
+- Go 标准库 `net/http`：HTTP API 框架
+- gRPC `1.82.x`：服务端与 Worker 通信
+- PostgreSQL `16`：持久化元数据存储
 - Docker Compose `v2`：本地部署编排
-- Prometheus `2.x`：基础可观测性
+- Prometheus 文本格式指标：基础可观测性（`/metrics`）
+
+MySQL 备份与 Redis 诊断是受管运维目标，而非 ADP 自身依赖；当前调度未引入 Redis 队列或缓存。
 
 ## 当前推荐源码结构
 

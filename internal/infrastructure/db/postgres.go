@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -69,7 +68,7 @@ func (r *PostgresRepository) Migrate() error {
 // seedCounter reads the highest existing ID suffix from the database and sets the counter above it.
 // Called once on startup to avoid collisions after server restart.
 func (r *PostgresRepository) seedCounter() {
-	tables := []string{"workers", "jobs", "audit_logs", "incident_cases", "diagnosis_plans", "job_yamls", "managed_configs"}
+	tables := []string{"workers", "jobs", "audit_logs", "incident_cases", "diagnosis_plans", "job_yamls", "managed_configs", "conversations", "agent_runs"}
 	var maxVal uint64
 	for _, table := range tables {
 		var suffix uint64
@@ -314,6 +313,16 @@ func (r *PostgresRepository) DeleteWorker(id string) error {
 // ── Jobs ──
 
 func (r *PostgresRepository) CreateJob(job model.Job) (model.Job, error) {
+	if job.IdempotencyKey != "" {
+		var existingID string
+		err := r.db.QueryRow(`SELECT id FROM jobs WHERE idempotency_key = $1`, job.IdempotencyKey).Scan(&existingID)
+		if err == nil {
+			return r.GetJob(existingID)
+		}
+		if err != sql.ErrNoRows {
+			return model.Job{}, fmt.Errorf("find idempotent job: %w", err)
+		}
+	}
 	now := time.Now()
 	job.ID = r.genID("job")
 	job.CreatedAt = now
@@ -337,16 +346,22 @@ func (r *PostgresRepository) CreateJob(job model.Job) (model.Job, error) {
 		`INSERT INTO jobs (id, name, worker_type, command, status, risk_level,
 		 approval_required, approval_status, approval_comment,
 		 approved_by, approved_at, rejected_by, rejected_at,
-		 template_code, parameters, source_type, source_id, assigned_worker_id, output,
+		 template_code, parameters, source_type, source_id, idempotency_key, assigned_worker_id, output,
 		 created_at, updated_at, started_at, finished_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
 		job.ID, job.Name, job.WorkerType, job.Command, job.Status, job.RiskLevel,
 		job.ApprovalRequired, job.ApprovalStatus, job.ApprovalComment,
 		job.ApprovedBy, job.ApprovedAt, job.RejectedBy, job.RejectedAt,
-		job.TemplateCode, parametersJSON, job.SourceType, job.SourceID, job.AssignedWorkerID, job.Output,
+		job.TemplateCode, parametersJSON, job.SourceType, job.SourceID, job.IdempotencyKey, job.AssignedWorkerID, job.Output,
 		job.CreatedAt, job.UpdatedAt, job.StartedAt, job.FinishedAt,
 	)
 	if err != nil {
+		if job.IdempotencyKey != "" {
+			var existingID string
+			if lookupErr := r.db.QueryRow(`SELECT id FROM jobs WHERE idempotency_key = $1`, job.IdempotencyKey).Scan(&existingID); lookupErr == nil {
+				return r.GetJob(existingID)
+			}
+		}
 		return model.Job{}, fmt.Errorf("create job: %w", err)
 	}
 	return job, nil
@@ -744,10 +759,13 @@ func (r *PostgresRepository) UpsertIncidentCase(planID string, c model.IncidentC
 		_, err = r.db.Exec(
 			`UPDATE incident_cases SET title = $1, trigger_type = $2, fault_type = $3,
 			 summary = $4, possible_causes = $5, suggestions = $6, confidence = $7,
-			 updated_at = $8 WHERE id = $9`,
+			 alert_symptoms = $8, environment_tags = $9, evidence_summary = $10,
+			 root_cause = $11, resolution_steps = $12, resolution_result = $13,
+			 updated_at = $14 WHERE id = $15`,
 			c.Title, c.TriggerType, c.FaultType, c.Summary,
 			pq.Array(c.PossibleCauses), pq.Array(c.Suggestions), c.Confidence,
-			now, c.ID,
+			c.AlertSymptoms, pq.Array(c.EnvironmentTags), c.EvidenceSummary,
+			c.RootCause, pq.Array(c.ResolutionSteps), c.ResolutionResult, now, c.ID,
 		)
 		if err != nil {
 			return model.IncidentCase{}, fmt.Errorf("update incident case: %w", err)
@@ -766,14 +784,23 @@ func (r *PostgresRepository) UpsertIncidentCase(planID string, c model.IncidentC
 	if c.Suggestions == nil {
 		c.Suggestions = []string{}
 	}
+	if c.EnvironmentTags == nil {
+		c.EnvironmentTags = []string{}
+	}
+	if c.ResolutionSteps == nil {
+		c.ResolutionSteps = []string{}
+	}
 
 	_, err = r.db.Exec(
 		`INSERT INTO incident_cases (id, title, trigger_type, fault_type, summary,
-		 possible_causes, suggestions, confidence, source_plan_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		 possible_causes, suggestions, confidence, source_plan_id, alert_symptoms,
+		 environment_tags, evidence_summary, root_cause, resolution_steps,
+		 resolution_result, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		c.ID, c.Title, c.TriggerType, c.FaultType, c.Summary,
 		pq.Array(c.PossibleCauses), pq.Array(c.Suggestions), c.Confidence,
-		planID, c.CreatedAt, c.UpdatedAt,
+		planID, c.AlertSymptoms, pq.Array(c.EnvironmentTags), c.EvidenceSummary,
+		c.RootCause, pq.Array(c.ResolutionSteps), c.ResolutionResult, c.CreatedAt, c.UpdatedAt,
 	)
 	if err != nil {
 		return model.IncidentCase{}, fmt.Errorf("insert incident case: %w", err)
@@ -783,7 +810,9 @@ func (r *PostgresRepository) UpsertIncidentCase(planID string, c model.IncidentC
 
 func (r *PostgresRepository) ListIncidentCases(filter model.IncidentCaseFilter) ([]model.IncidentCase, error) {
 	query := `SELECT id, title, trigger_type, fault_type, summary,
-		 possible_causes, suggestions, confidence, source_plan_id, created_at, updated_at
+		 possible_causes, suggestions, confidence, source_plan_id, alert_symptoms,
+		 environment_tags, evidence_summary, root_cause, resolution_steps,
+		 resolution_result, created_at, updated_at
 		 FROM incident_cases WHERE 1=1`
 	var args []any
 	argN := 1
@@ -798,11 +827,19 @@ func (r *PostgresRepository) ListIncidentCases(filter model.IncidentCaseFilter) 
 		args = append(args, filter.FaultType)
 		argN++
 	}
+	if len(filter.EnvironmentTags) > 0 {
+		query += fmt.Sprintf(" AND environment_tags @> $%d", argN)
+		args = append(args, pq.Array(filter.EnvironmentTags))
+		argN++
+	}
 	if filter.Query != "" {
-		query += fmt.Sprintf(" AND (LOWER(title) LIKE LOWER($%d) OR LOWER(summary) LIKE LOWER($%d))", argN, argN+1)
+		query += fmt.Sprintf(` AND concat_ws(' ', title, trigger_type, fault_type, summary,
+			alert_symptoms, evidence_summary, root_cause, resolution_result,
+			array_to_string(environment_tags, ' '), array_to_string(resolution_steps, ' '),
+			array_to_string(possible_causes, ' '), array_to_string(suggestions, ' ')) ILIKE $%d`, argN)
 		pattern := "%" + filter.Query + "%"
-		args = append(args, pattern, pattern)
-		argN += 2
+		args = append(args, pattern)
+		argN++
 	}
 
 	query += " ORDER BY updated_at DESC"
@@ -823,7 +860,9 @@ func (r *PostgresRepository) ListIncidentCases(filter model.IncidentCaseFilter) 
 		var c model.IncidentCase
 		if err := rows.Scan(&c.ID, &c.Title, &c.TriggerType, &c.FaultType, &c.Summary,
 			pq.Array(&c.PossibleCauses), pq.Array(&c.Suggestions), &c.Confidence,
-			&c.SourcePlanID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.SourcePlanID, &c.AlertSymptoms, pq.Array(&c.EnvironmentTags),
+			&c.EvidenceSummary, &c.RootCause, pq.Array(&c.ResolutionSteps),
+			&c.ResolutionResult, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan incident case: %w", err)
 		}
 		cases = append(cases, c)
@@ -832,45 +871,10 @@ func (r *PostgresRepository) ListIncidentCases(filter model.IncidentCaseFilter) 
 }
 
 func (r *PostgresRepository) FindSimilarIncidentCases(description, triggerType, faultType string, limit int) ([]model.IncidentCase, error) {
-	// Fetch all cases, score in memory (same algorithm as memory store).
-	all, err := r.ListIncidentCases(model.IncidentCaseFilter{})
-	if err != nil {
-		return nil, err
-	}
-
-	type scoredCase struct {
-		caseItem model.IncidentCase
-		score    int
-	}
-
-	var scored []scoredCase
-	for _, c := range all {
-		score := incidentCaseScore(c, description, triggerType, faultType)
-		if score <= 0 {
-			continue
-		}
-		scored = append(scored, scoredCase{caseItem: c, score: score})
-	}
-
-	sort.Slice(scored, func(i, j int) bool {
-		if scored[i].score == scored[j].score {
-			return scored[i].caseItem.UpdatedAt.After(scored[j].caseItem.UpdatedAt)
-		}
-		return scored[i].score > scored[j].score
-	})
-
-	if limit <= 0 {
-		limit = 3
-	}
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
-
-	result := make([]model.IncidentCase, 0, len(scored))
-	for _, item := range scored {
-		result = append(result, item.caseItem)
-	}
-	return result, nil
+	// P1 retrieval is deliberately deterministic keyword/structured matching.
+	// It avoids the previous full-table fetch and keeps the eventual pgvector
+	// addition an in-place enhancement rather than a second data store.
+	return r.ListIncidentCases(model.IncidentCaseFilter{Query: description, TriggerType: triggerType, FaultType: faultType, Limit: limit})
 }
 
 // ── Job YAMLs ──
@@ -1275,4 +1279,122 @@ func (r *PostgresRepository) ListConversationMessages(conversationID string) ([]
 		list = []model.ConversationMessage{}
 	}
 	return list, rows.Err()
+}
+
+// ── Agent runs ──
+
+func (r *PostgresRepository) CreateAgentRun(run model.AgentRun) (model.AgentRun, error) {
+	if run.ID == "" {
+		run.ID = r.genID("run")
+	}
+	now := time.Now()
+	run.CreatedAt, run.UpdatedAt = now, now
+	if run.Status == "" {
+		run.Status = model.AgentRunStatusQueued
+	}
+	if len(run.Transcript) == 0 {
+		run.Transcript = []byte("[]")
+	}
+	_, err := r.db.Exec(`INSERT INTO agent_runs (id,input,conversation_id,status,trace_id,policy_version,prompt_version,transcript,next_step,answer,error,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, run.ID, run.Input, run.ConversationID, run.Status, run.TraceID, run.PolicyVersion, run.PromptVersion, run.Transcript, run.NextStep, run.Answer, run.Error, run.CreatedAt, run.UpdatedAt)
+	if err != nil {
+		return model.AgentRun{}, fmt.Errorf("create agent run: %w", err)
+	}
+	return run, nil
+}
+func (r *PostgresRepository) GetAgentRun(id string) (model.AgentRun, error) {
+	var run model.AgentRun
+	err := r.db.QueryRow(`SELECT id,input,conversation_id,status,trace_id,policy_version,prompt_version,transcript,next_step,answer,error,created_at,updated_at FROM agent_runs WHERE id=$1`, id).Scan(&run.ID, &run.Input, &run.ConversationID, &run.Status, &run.TraceID, &run.PolicyVersion, &run.PromptVersion, &run.Transcript, &run.NextStep, &run.Answer, &run.Error, &run.CreatedAt, &run.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return model.AgentRun{}, fmt.Errorf("agent run not found: %s", id)
+	}
+	if err != nil {
+		return model.AgentRun{}, fmt.Errorf("get agent run: %w", err)
+	}
+	return run, nil
+}
+func (r *PostgresRepository) ListAgentRunsByStatus(statuses ...model.AgentRunStatus) ([]model.AgentRun, error) {
+	if len(statuses) == 0 {
+		return []model.AgentRun{}, nil
+	}
+	args := make([]any, len(statuses))
+	placeholders := make([]string, len(statuses))
+	for i, status := range statuses {
+		args[i] = status
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+	rows, err := r.db.Query(`SELECT id,input,conversation_id,status,trace_id,policy_version,prompt_version,transcript,next_step,answer,error,created_at,updated_at FROM agent_runs WHERE status IN (`+strings.Join(placeholders, ",")+`) ORDER BY created_at`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list agent runs: %w", err)
+	}
+	defer rows.Close()
+	out := []model.AgentRun{}
+	for rows.Next() {
+		var run model.AgentRun
+		if err := rows.Scan(&run.ID, &run.Input, &run.ConversationID, &run.Status, &run.TraceID, &run.PolicyVersion, &run.PromptVersion, &run.Transcript, &run.NextStep, &run.Answer, &run.Error, &run.CreatedAt, &run.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, run)
+	}
+	return out, rows.Err()
+}
+func (r *PostgresRepository) UpdateAgentRun(run model.AgentRun) error {
+	run.UpdatedAt = time.Now()
+	if len(run.Transcript) == 0 {
+		run.Transcript = []byte("[]")
+	}
+	result, err := r.db.Exec(`UPDATE agent_runs SET status=$1,transcript=$2,next_step=$3,answer=$4,error=$5,updated_at=$6 WHERE id=$7`, run.Status, run.Transcript, run.NextStep, run.Answer, run.Error, run.UpdatedAt, run.ID)
+	if err != nil {
+		return fmt.Errorf("update agent run: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("agent run not found: %s", run.ID)
+	}
+	return nil
+}
+func (r *PostgresRepository) AddAgentEvent(event model.AgentEvent) (model.AgentEvent, error) {
+	data, _ := json.Marshal(event.Data)
+	now := time.Now()
+	err := r.db.QueryRow(`INSERT INTO agent_events (run_id,step,type,name,data,created_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, event.RunID, event.Step, event.Type, event.Name, data, now).Scan(&event.ID)
+	if err != nil {
+		return model.AgentEvent{}, fmt.Errorf("add agent event: %w", err)
+	}
+	event.CreatedAt = now
+	return event, nil
+}
+func (r *PostgresRepository) ListAgentEvents(runID string, afterID int64) ([]model.AgentEvent, error) {
+	rows, err := r.db.Query(`SELECT id,run_id,step,type,name,data,created_at FROM agent_events WHERE run_id=$1 AND id>$2 ORDER BY id`, runID, afterID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent events: %w", err)
+	}
+	defer rows.Close()
+	out := []model.AgentEvent{}
+	for rows.Next() {
+		var e model.AgentEvent
+		var data []byte
+		if err := rows.Scan(&e.ID, &e.RunID, &e.Step, &e.Type, &e.Name, &data, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(data, &e.Data)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+func (r *PostgresRepository) CreateAgentToolCall(call model.AgentToolCall) error {
+	if call.ID == "" {
+		return fmt.Errorf("tool call id is required")
+	}
+	if len(call.Arguments) == 0 {
+		call.Arguments = []byte("{}")
+	}
+	_, err := r.db.Exec(`INSERT INTO agent_tool_calls (id,run_id,step,tool_name,arguments,status,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING`, call.ID, call.RunID, call.Step, call.ToolName, call.Arguments, call.Status, time.Now())
+	return err
+}
+func (r *PostgresRepository) CompleteAgentToolCall(call model.AgentToolCall) error {
+	if len(call.Result) == 0 {
+		call.Result = []byte("{}")
+	}
+	now := time.Now()
+	_, err := r.db.Exec(`UPDATE agent_tool_calls SET result=$1,error=$2,status=$3,completed_at=$4 WHERE id=$5`, call.Result, call.Error, call.Status, now, call.ID)
+	return err
 }
