@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -170,7 +171,12 @@ func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request, id
 	w.Header().Set("Cache-Control", "no-cache")
 	after := int64(0)
 	if raw := r.URL.Query().Get("after"); raw != "" {
-		fmt.Sscan(raw, &after)
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("after must be a non-negative event ID"))
+			return
+		}
+		after = parsed
 	}
 	events, err := s.repo.ListAgentEvents(id, after)
 	if err != nil {
@@ -179,7 +185,9 @@ func (s *Server) handleAgentEventsSSE(w http.ResponseWriter, r *http.Request, id
 	}
 	for _, event := range events {
 		data, _ := json.Marshal(event)
-		fmt.Fprintf(w, "id: %d\ndata: %s\n\n", event.ID, data)
+		if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", event.ID, data); err != nil {
+			return
+		}
 	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()

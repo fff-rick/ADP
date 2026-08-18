@@ -1120,56 +1120,6 @@ func (r *PostgresRepository) MetricsSnapshot() (model.MetricsSnapshot, error) {
 	return snapshot, nil
 }
 
-// ── Similarity Scoring (same as memory store) ──
-
-func incidentCaseScore(c model.IncidentCase, description, triggerType, faultType string) int {
-	score := 0
-	if triggerType != "" && c.TriggerType == triggerType {
-		score += 3
-	}
-	if faultType != "" && strings.EqualFold(c.FaultType, faultType) {
-		score += 4
-	}
-
-	haystack := incidentCaseSearchText(c)
-	for _, token := range tokenizeSearch(description) {
-		if strings.Contains(haystack, token) {
-			score++
-		}
-	}
-	return score
-}
-
-func incidentCaseSearchText(c model.IncidentCase) string {
-	parts := []string{
-		c.Title, c.TriggerType, c.FaultType, c.Summary,
-		strings.Join(c.PossibleCauses, " "),
-		strings.Join(c.Suggestions, " "),
-	}
-	return strings.ToLower(strings.Join(parts, " "))
-}
-
-func tokenizeSearch(input string) []string {
-	input = strings.ToLower(strings.TrimSpace(input))
-	if input == "" {
-		return nil
-	}
-	replacer := strings.NewReplacer(",", " ", ".", " ", ";", " ", ":", " ", "(", " ", ")", " ", "\n", " ", "\t", " ")
-	input = replacer.Replace(input)
-	parts := strings.Fields(input)
-
-	tokens := make([]string, 0, len(parts))
-	seen := make(map[string]bool, len(parts))
-	for _, part := range parts {
-		if len(part) < 2 || seen[part] {
-			continue
-		}
-		seen[part] = true
-		tokens = append(tokens, part)
-	}
-	return tokens
-}
-
 // ── Conversations ──
 
 func (r *PostgresRepository) CreateConversation(title string) (model.Conversation, error) {
@@ -1326,7 +1276,7 @@ func (r *PostgresRepository) ListAgentRunsByStatus(statuses ...model.AgentRunSta
 	if err != nil {
 		return nil, fmt.Errorf("list agent runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []model.AgentRun{}
 	for rows.Next() {
 		var run model.AgentRun
@@ -1367,7 +1317,7 @@ func (r *PostgresRepository) ListAgentEvents(runID string, afterID int64) ([]mod
 	if err != nil {
 		return nil, fmt.Errorf("list agent events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []model.AgentEvent{}
 	for rows.Next() {
 		var e model.AgentEvent
