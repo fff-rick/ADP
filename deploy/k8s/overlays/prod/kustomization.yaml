@@ -4,7 +4,7 @@ kind: Kustomization
 namespace: adp
 
 resources:
-  // - ../../base
+  - ../../base
   - secrets/sealed-postgres-secret.yaml
   - secrets/sealed-adp-server-secret.yaml
 
