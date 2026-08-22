@@ -13,6 +13,7 @@ type dashboardSummaryResponse struct {
 	User             model.User              `json:"user"`
 	CurrentTime      string                  `json:"current_time"`
 	Metrics          model.MetricsSnapshot   `json:"metrics"`
+	AgentMetrics     map[string]float64      `json:"agent_metrics"`
 	RecentJobs       []model.Job             `json:"recent_jobs"`
 	Workers          []model.Worker          `json:"workers"`
 	PendingApprovals []model.Job             `json:"pending_approvals"`
@@ -69,6 +70,7 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 		User:             currentUser(r),
 		CurrentTime:      time.Now().Format(time.RFC3339),
 		Metrics:          metrics,
+		AgentMetrics:     s.agentMetrics.dashboard(),
 		RecentJobs:       jobs,
 		Workers:          workers,
 		PendingApprovals: pending,

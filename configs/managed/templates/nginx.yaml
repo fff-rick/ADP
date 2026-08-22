@@ -1,0 +1,39 @@
+id: nginx
+name: Nginx diagnostic templates
+templates:
+  - code: nginx_config_test
+    name: Nginx 配置校验
+    description: 校验 Nginx 配置语法，不写入或重载配置。
+    tool_type: nginx
+    command: nginx -t
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地 Nginx 服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: nginx}
+  - code: nginx_http_local_check
+    name: Nginx 本机 HTTP 健康检查
+    description: 请求 Worker 本机 Nginx 的 HTTP 入口，仅检查可用性。
+    tool_type: nginx
+    command: curl --fail --silent --show-error --max-time 10 http://127.0.0.1/
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地 Nginx 服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: nginx}
+  - code: nginx_error_log_tail
+    name: Nginx 错误日志摘要
+    description: 读取 Nginx 标准错误日志的最近 100 行，用于定位连接、上游和配置错误。
+    tool_type: nginx
+    command: tail -n 100 /var/log/nginx/error.log
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地 Nginx 服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: nginx}
+  - code: nginx_listening_ports
+    name: Nginx 监听端口检查
+    description: 检查常见 HTTP/HTTPS 端口是否处于监听状态。
+    tool_type: nginx
+    command: ss -tln | grep -E ':(80|443)[[:space:]]' || true
+    risk_level: low
+    parameters:
+      - {name: ServiceProfile, description: Worker 本地 Nginx 服务配置, required: true}
+      - {name: ServiceType, description: 服务类型, required: true, default: nginx}

@@ -37,6 +37,13 @@ type CompletionRequest struct {
 
 type Completion struct {
 	Message Message
+	Usage   Usage
+}
+
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 type Client interface {
@@ -126,6 +133,11 @@ func (c *HTTPClient) Complete(ctx context.Context, in CompletionRequest) (Comple
 		Choices []struct {
 			Message wireMessage `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return Completion{}, fmt.Errorf("decode completion: %w", err)
@@ -140,5 +152,5 @@ func (c *HTTPClient) Complete(ctx context.Context, in CompletionRequest) (Comple
 		}
 		answer.ToolCalls = append(answer.ToolCalls, ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: json.RawMessage(call.Function.Arguments)})
 	}
-	return Completion{Message: answer}, nil
+	return Completion{Message: answer, Usage: Usage{PromptTokens: payload.Usage.PromptTokens, CompletionTokens: payload.Usage.CompletionTokens, TotalTokens: payload.Usage.TotalTokens}}, nil
 }

@@ -7,13 +7,19 @@
 <div style="display:grid;grid-template-columns:240px 1fr;gap:20px;min-height:70vh;">
   <!-- 左侧：对话列表 -->
   <div class="panel-shell"><div class="panel-core" style="display:flex;flex-direction:column;height:100%;">
-    <div class="panel-heading"><span class="panel-index">对话</span><span class="panel-title">历史</span></div>
+	    <div class="panel-heading"><span class="panel-index">对话</span><span class="panel-title">历史</span></div>
+	    <div class="agent-safety-card" aria-label="Agent 安全边界"><strong>受控执行</strong><span>仅已注册模块</span><span>Shell 永久关闭</span><span>历史案例仅供参考，不是实时事实</span><span>事件已脱敏 / 限长</span></div>
     <button class="btn btn-primary btn-xs" id="new-conv-btn" style="margin-bottom:12px;width:100%;" onclick="startNewConversation()">+ 新对话</button>
     <div id="conversation-list" style="flex:1;overflow-y:auto;font-size:.8125rem;"></div>
+    <div class="run-monitor" id="agent-run-monitor" aria-live="polite">
+      <div class="run-monitor-heading"><span>运行账本</span><button class="btn btn-xs btn-ghost" id="run-replay-button" type="button" disabled>重放事件</button></div>
+      <div id="agent-run-summary" class="run-monitor-empty">提交任务后显示状态、追踪信息与恢复进度。</div>
+      <div id="agent-run-events" class="run-event-list"></div>
+    </div>
   </div></div>
   <!-- 右侧：对话内容 -->
   <div class="panel-shell"><div class="panel-core" style="display:flex;flex-direction:column;height:100%;">
-    <div class="panel-heading"><span class="panel-index" id="conv-title-index">Agent</span><span class="panel-title" id="conv-title-text">新对话</span><span class="panel-subtitle" id="conv-subtitle">YAML 模板 + 受控 Shell</span></div>
+    <div class="panel-heading"><span class="panel-index" id="conv-title-index">Agent</span><span class="panel-title" id="conv-title-text">新对话</span><span class="panel-subtitle" id="conv-subtitle">受控工具调用 · 可恢复执行</span></div>
     <div id="conversation-messages" style="flex:1;overflow-y:auto;padding:8px 0;font-size:.8125rem;max-height:50vh;"></div>
     <form id="task-form" class="form-stack" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
       <div class="field-group"><textarea class="field-textarea" id="task-input" rows="3" placeholder="输入运维指令，例如：检查 worker-1 的磁盘使用情况"></textarea></div>
@@ -22,9 +28,13 @@
   </div></div>
 </div>
 <!-- Agent 创建的任务列表 -->
-<div class="panel-shell scroll-reveal" style="margin-top:20px;"><div class="panel-core">
+	<div class="panel-shell scroll-reveal" style="margin-top:20px;"><div class="panel-core">
   <div class="panel-heading"><span class="panel-index">执行</span><span class="panel-title">Agent 创建的任务</span></div>
   <div id="task-list"></div>
-</div></div>
+	</div></div>
+	<div class="panel-shell scroll-reveal" style="margin-top:20px;"><div class="panel-core">
+	  <div class="panel-heading"><span class="panel-index">Safety</span><span class="panel-title">安全与评测闭环</span><span class="panel-subtitle">模型、Prompt、工具或策略变更均需执行回归评测</span></div>
+	  <div class="agent-safety-grid"><div><strong>25 条</strong><span>确定性安全评测</span></div><div><strong>注册模块</strong><span>禁止 raw shell / SQL / YAML / 文件工具</span></div><div><strong>真实证据</strong><span>报告通过已持久化工具结果回放核验</span></div></div>
+	</div></div>
 </main>
 </div><div id="toast" class="toast" hidden></div><script src="/static/app.js" defer></script></body></html>

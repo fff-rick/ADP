@@ -1636,6 +1636,26 @@ deploy/k8s/manifests/worker-deployment.yaml     — 旧裸 YAML
 
 ---
 
+# Iteration 1：可恢复 Agent 运行底座
+
+日期：2026-08-13
+
+- 新增 `AgentRun`、`AgentEvent`、`AgentToolCall`，并实现 PostgreSQL 和内存仓储。
+- run 状态采用 `queued → running → waiting_approval → running → completed/failed/cancelled`；服务器启动时恢复中断的 queued/running run，等待审批的 run 仅能由审批接口恢复。
+- 模型协议消息、工具调用参数、工具结果及可重放事件均持久化，并带 `trace_id`、`policy_version`、`prompt_version`。
+- Agent 创建任务采用 `run_id:tool_call_id:worker_id` 唯一幂等键；PostgreSQL 以唯一索引保证并发/重试时复用原任务。
+- 新增 run 查询、SSE 事件重放和取消 API；审批拒绝会取消关联的等待 run。
+- 验证：`go test ./...` 通过。
+
+## Iteration 1：前端运行账本集成
+
+日期：2026-08-14
+
+- Agent 页面新增运行账本面板，展示 run 状态、run ID、trace ID、策略版本和 Prompt 版本。
+- 支持从持久化 SSE 端点重放事件，并呈现模型/工具事件摘要。
+- 对 `queued` 与 `waiting_approval` run 提供取消入口。
+- 审批操作不再由浏览器创建新的“继续” run，改为展示服务端自动恢复的同一 run，保持审批恢复和幂等语义。
+
 # 生产敏感数据治理修正日志
 
 日期：2026-07-24

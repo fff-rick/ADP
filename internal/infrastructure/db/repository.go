@@ -92,6 +92,16 @@ type Repository interface {
 	AddConversationMessage(msg model.ConversationMessage) error
 	ListConversationMessages(conversationID string) ([]model.ConversationMessage, error)
 
+	// ── Agent runs ──
+	CreateAgentRun(run model.AgentRun) (model.AgentRun, error)
+	GetAgentRun(id string) (model.AgentRun, error)
+	ListAgentRunsByStatus(statuses ...model.AgentRunStatus) ([]model.AgentRun, error)
+	UpdateAgentRun(run model.AgentRun) error
+	AddAgentEvent(event model.AgentEvent) (model.AgentEvent, error)
+	ListAgentEvents(runID string, afterID int64) ([]model.AgentEvent, error)
+	CreateAgentToolCall(call model.AgentToolCall) error
+	CompleteAgentToolCall(call model.AgentToolCall) error
+
 	// ── Metrics ──
 
 	MetricsSnapshot() (model.MetricsSnapshot, error)

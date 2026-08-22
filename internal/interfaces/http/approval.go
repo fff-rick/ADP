@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -54,6 +55,35 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
+		}
+		if job.ApprovedAt != nil {
+			s.agentMetrics.approval(job.CreatedAt)
+		}
+
+		// Auto-dispatch if the Agent already assigned a worker.
+		if *req.Approved && job.AssignedWorkerID != "" {
+			dispatched, derr := s.dispatchJobToWorker(job.ID, job.AssignedWorkerID)
+			if derr == nil {
+				s.workerHub.PushJob(job.AssignedWorkerID, dispatched)
+				job = dispatched
+			}
+		}
+		// A run paused at this approval point resumes inside the service; no client
+		// retry or second model submission is needed after a restart.
+		if *req.Approved && job.SourceID != "" {
+			go func(runID string) {
+				if _, _, resumeErr := s.executePersistentRun(context.Background(), runID); resumeErr != nil {
+					s.recordAudit("system", "agent", "agent.run.resume_failed", "agent_run", runID, map[string]any{"error": resumeErr.Error()})
+				}
+			}(job.SourceID)
+		}
+		if !*req.Approved && job.SourceID != "" {
+			if run, runErr := s.repo.GetAgentRun(job.SourceID); runErr == nil && run.Status == model.AgentRunStatusWaitingApproval {
+				run.Status = model.AgentRunStatusCancelled
+				run.Error = "approval rejected"
+				_ = s.repo.UpdateAgentRun(run)
+				_, _ = s.repo.AddAgentEvent(model.AgentEvent{RunID: run.ID, Type: "approval_rejected", Data: map[string]any{"job_id": job.ID}})
+			}
 		}
 
 		// Auto-dispatch if the Agent already assigned a worker.

@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.server
+    env_file:
+      - .env
+    environment:
+      ADP_ADDR: :8080
+      ADP_WORKER_GRPC_ADDR: :9090
+      ADP_DB_DSN: ${ADP_DB_DSN}
+      ADP_AUTH_ADMIN_USERNAME: ${ADP_AUTH_ADMIN_USERNAME}
+      ADP_AUTH_ADMIN_PASSWORD: ${ADP_AUTH_ADMIN_PASSWORD}
+      ADP_AUTH_SECRET: ${ADP_AUTH_SECRET}
+      ADP_AUTH_WORKER_TOKEN: ${ADP_AUTH_WORKER_TOKEN}
+      ADP_AGENT_ALLOW_SHELL: "false"
+    ports:
+      - "${ADP_HTTP_PORT:-18080}:8080"
+      - "${ADP_GRPC_PORT:-19090}:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.worker
+    environment:
+      ADP_SERVER_URL: http://server:8080
+      ADP_GRPC_SERVER_ADDR: server:9090
+      ADP_WORKER_TOKEN: ${ADP_AUTH_WORKER_TOKEN}
+      ADP_WORKER_NAME: docker-worker-1
+      ADP_WORKER_TYPE: shell
+    volumes:
+      # Development-only profiles. Production must mount a protected local
+      # services.cnf with real profiles instead.
+      - ../../configs/worker/services.cnf.example:/etc/adp/services.cnf:ro
+    depends_on:
+      server:
+        condition: service_healthy
+        restart: true
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

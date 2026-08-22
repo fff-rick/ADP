@@ -53,13 +53,16 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		convID = conv.ID
 	}
 
-	// Persist user message.
+	// Persist user message and create the durable run before invoking the model.
 	_ = s.repo.AddConversationMessage(model.ConversationMessage{
 		ConversationID: convID, Role: "user", Content: req.Input,
 	})
-
-	// Run Agent with history.
-	result, err := s.agentRuntime.Run(r.Context(), req.Input, history)
+	run, err := s.createPersistentRun(req.Input, convID, history)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	run, events, err := s.executePersistentRun(r.Context(), run.ID)
 	if err != nil {
 		// Still persist the error as an assistant message.
 		_ = s.repo.AddConversationMessage(model.ConversationMessage{
@@ -69,8 +72,8 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist Agent events as conversation messages.
-	for _, ev := range result.Events {
+	// Persist Agent events as conversation messages for the existing UI.
+	for _, ev := range events {
 		// Only persist tool calls; skip intermediate assistant thinking.
 		if ev.Type != "tool" {
 			continue
@@ -85,23 +88,24 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		_ = s.repo.AddConversationMessage(msg)
 	}
 	// Persist final answer. (Events loop above skips assistant, so always store it here.)
-	if result.Answer != "" {
+	if run.Answer != "" {
 		_ = s.repo.AddConversationMessage(model.ConversationMessage{
-			ConversationID: convID, Role: "assistant", Content: result.Answer, Step: result.Steps + 1,
+			ConversationID: convID, Role: "assistant", Content: run.Answer, Step: run.NextStep,
 		})
 	}
 
 	user := currentUser(r)
-	s.recordAudit("user", user.Username, "agent.run.completed", "agent_run", "", map[string]any{"steps": result.Steps, "conversation_id": convID})
+	s.recordAudit("user", user.Username, "agent.run.completed", "agent_run", run.ID, map[string]any{"steps": run.NextStep - 1, "conversation_id": convID, "status": run.Status})
 
 	// Return pending jobs explicitly so both JSON and SSE clients can render the
 	// approval controls immediately, without having to infer them from tool logs.
-	pendingApprovals := pendingApprovalsFromEvents(result.Events)
+	pendingApprovals := pendingApprovalsFromEvents(events)
 
 	resp := map[string]any{
-		"answer":          result.Answer,
-		"events":          result.Events,
-		"steps":           result.Steps,
+		"run":             run,
+		"answer":          run.Answer,
+		"events":          events,
+		"steps":           run.NextStep - 1,
 		"conversation_id": convID,
 	}
 	if len(pendingApprovals) > 0 {
@@ -186,6 +190,17 @@ func (s *Server) agentTools() []agent.Tool {
 	tools := []agent.Tool{
 		agentTool{
 			definition: llm.ToolDefinition{
+				Name: "search_incident_cases", Description: "Search sanitized historical incident cases by keywords and optional environment tags. Results are historical references, not live host facts; every result includes source_id.",
+				Parameters: map[string]any{"type": "object", "properties": map[string]any{
+					"query":        map[string]any{"type": "string", "description": "Alert symptom, error text, or fault keywords"},
+					"trigger_type": map[string]any{"type": "string"}, "fault_type": map[string]any{"type": "string"},
+					"environment_tags": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"limit":            map[string]any{"type": "integer", "minimum": 1, "maximum": 5},
+				}, "additionalProperties": false},
+			}, execute: s.searchIncidentCases,
+		},
+		agentTool{
+			definition: llm.ToolDefinition{
 				Name:        "get_worker_facts",
 				Description: "Read the latest hostname, IP, CPU and storage facts reported by one or more Worker hosts.",
 				Parameters: map[string]any{
@@ -251,30 +266,77 @@ func (s *Server) agentTools() []agent.Tool {
 			execute: s.getJobResult,
 		},
 	}
-	if s.config.AgentAllowShell {
-		tools = append(tools, agentTool{
-			definition: llm.ToolDefinition{
-				Name:        "execute_shell_command",
-				Description: "Execute a shell command directly on one or more workers. The command's first word must not be in the blocked tools list. Commands matching high-risk keywords (restart, kill, delete, etc.) require human approval. Prefer create_module_operation when a registered module exists for the task. Always provide a clear reason.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"command":    map[string]any{"type": "string", "description": "Shell command to execute"},
-						"worker_id":  map[string]any{"type": "string", "description": "Single worker ID"},
-						"worker_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Multiple worker IDs"},
-						"reason":     map[string]any{"type": "string", "description": "Why this command is needed"},
-					},
-					"required":             []string{"command", "reason"},
-					"additionalProperties": false,
-				},
-			},
-			execute: s.executeShellCommand,
-		})
-	}
 	return tools
 }
 
-func (s *Server) createModuleOperation(_ context.Context, raw json.RawMessage) (any, error) {
+func (s *Server) searchIncidentCases(_ context.Context, raw json.RawMessage) (any, error) {
+	var in struct {
+		Query           string   `json:"query"`
+		TriggerType     string   `json:"trigger_type"`
+		FaultType       string   `json:"fault_type"`
+		EnvironmentTags []string `json:"environment_tags"`
+		Limit           int      `json:"limit"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, err
+	}
+	in.Query, in.TriggerType, in.FaultType = strings.TrimSpace(in.Query), strings.TrimSpace(in.TriggerType), strings.TrimSpace(in.FaultType)
+	if in.Query == "" && in.TriggerType == "" && in.FaultType == "" && len(in.EnvironmentTags) == 0 {
+		return nil, errors.New("query, trigger_type, fault_type, or environment_tags is required")
+	}
+	if in.Limit <= 0 || in.Limit > 5 {
+		in.Limit = 3
+	}
+	cases, err := s.repo.ListIncidentCases(model.IncidentCaseFilter{Query: in.Query, TriggerType: in.TriggerType, FaultType: in.FaultType, EnvironmentTags: in.EnvironmentTags, Limit: in.Limit})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]map[string]any, 0, len(cases))
+	for _, c := range cases {
+		alertSymptoms := c.AlertSymptoms
+		if alertSymptoms == "" {
+			alertSymptoms = c.Summary
+		}
+		evidenceSummary := c.EvidenceSummary
+		if evidenceSummary == "" {
+			evidenceSummary = c.Summary
+		}
+		rootCause := c.RootCause
+		if rootCause == "" && len(c.PossibleCauses) > 0 {
+			rootCause = c.PossibleCauses[0]
+		}
+		resolutionSteps := c.ResolutionSteps
+		if len(resolutionSteps) == 0 {
+			resolutionSteps = c.Suggestions
+		}
+		items = append(items, map[string]any{
+			"source_id": c.ID, "alert_symptoms": caseToolText(alertSymptoms), "environment_tags": c.EnvironmentTags,
+			"evidence_summary": caseToolText(evidenceSummary), "root_cause": caseToolText(rootCause),
+			"resolution_steps": caseToolStrings(resolutionSteps), "resolution_result": caseToolText(c.ResolutionResult),
+			"disclaimer": "Historical reference only; verify against this run's tools before treating it as a current fact.",
+		})
+	}
+	return map[string]any{"cases": items, "source": "historical_incident_cases", "historical_only": true}, nil
+}
+
+const maxIncidentToolFieldLength = 800
+
+func caseToolText(value string) string {
+	value = model.SanitizeText(value)
+	if len(value) > maxIncidentToolFieldLength {
+		return value[:maxIncidentToolFieldLength] + "…[truncated]"
+	}
+	return value
+}
+func caseToolStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, caseToolText(value))
+	}
+	return out
+}
+
+func (s *Server) createModuleOperation(ctx context.Context, raw json.RawMessage) (any, error) {
 	var in struct {
 		ModuleCode string            `json:"module_code"`
 		WorkerID   string            `json:"worker_id"`
@@ -297,6 +359,13 @@ func (s *Server) createModuleOperation(_ context.Context, raw json.RawMessage) (
 	}
 	if err := model.ValidateServiceProfile(in.ModuleCode, in.Parameters); err != nil {
 		return nil, err
+	}
+	// The model may select a local service profile, but never the systemd unit.
+	// A harmless placeholder lets DryRun validate the module; the Worker replaces
+	// it with the unit pinned in its local profile before execution.
+	if in.Parameters["ServiceProfile"] != "" {
+		delete(in.Parameters, "Unit")
+		in.Parameters["Unit"] = "worker-local-profile"
 	}
 	// Validate module, policy, parameters once.
 	mod, err := s.moduleReg.Get(in.ModuleCode)
@@ -366,6 +435,8 @@ func (s *Server) createModuleOperation(_ context.Context, raw json.RawMessage) (
 			TemplateCode:     in.ModuleCode,
 			Parameters:       cloneStringMap(in.Parameters),
 			SourceType:       "agent",
+			SourceID:         agent.RunID(ctx),
+			IdempotencyKey:   agentJobIdempotencyKey(ctx, wid),
 			AssignedWorkerID: wid,
 		}
 		created, cerr := s.repo.CreateJob(job)
@@ -499,114 +570,12 @@ func (s *Server) getJobResult(_ context.Context, raw json.RawMessage) (any, erro
 	}, nil
 }
 
-func (s *Server) executeShellCommand(_ context.Context, raw json.RawMessage) (any, error) {
-	var in struct {
-		Command   string   `json:"command"`
-		WorkerID  string   `json:"worker_id"`
-		WorkerIDs []string `json:"worker_ids"`
-		Reason    string   `json:"reason"`
+func agentJobIdempotencyKey(ctx context.Context, workerID string) string {
+	runID, callID := agent.RunID(ctx), agent.ToolCallID(ctx)
+	if runID == "" || callID == "" {
+		return ""
 	}
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return nil, err
-	}
-	if in.Command == "" || in.Reason == "" {
-		return nil, errors.New("command and reason are required")
-	}
-	workerIDs, err := collectIDs(in.WorkerID, in.WorkerIDs, "worker_id")
-	if err != nil {
-		return nil, err
-	}
-	// Validate command against blacklist.
-	if err := s.policyEng.ValidateCommand(in.Command); err != nil {
-		return nil, err
-	}
-	// Assess risk from keywords.
-	risk := s.policyEng.AssessCommandRisk(in.Command)
-	approval := s.policyEng.RequiresManualApproval(risk)
-	status := model.JobStatusPending
-	approvalStatus := model.ApprovalStatusNotRequired
-	if approval {
-		status = model.JobStatusWaitingApproval
-		approvalStatus = model.ApprovalStatusPending
-	}
-	// Validate workers.
-	var compatible []string
-	var validationErrors []map[string]any
-	for _, wid := range workerIDs {
-		worker, werr := s.repo.GetWorker(wid)
-		if werr != nil {
-			validationErrors = append(validationErrors, map[string]any{"worker_id": wid, "error": werr.Error()})
-			continue
-		}
-		if worker.WorkerType != "shell" {
-			validationErrors = append(validationErrors, map[string]any{
-				"worker_id": wid, "worker_type": worker.WorkerType,
-				"error": "execute_shell_command requires shell-type workers",
-			})
-			continue
-		}
-		compatible = append(compatible, wid)
-	}
-	if len(compatible) == 0 {
-		return nil, fmt.Errorf("no compatible shell workers: %d validation errors", len(validationErrors))
-	}
-	// Create and dispatch jobs.
-	var jobs []map[string]any
-	for _, wid := range compatible {
-		jobName := fmt.Sprintf("[agent-shell][worker:%s] %s", wid, in.Reason)
-		job := model.Job{
-			Name:             jobName,
-			WorkerType:       "shell",
-			Command:          in.Command,
-			Status:           status,
-			RiskLevel:        risk,
-			ApprovalRequired: approval,
-			ApprovalStatus:   approvalStatus,
-			SourceType:       "agent_shell",
-			AssignedWorkerID: wid,
-		}
-		created, cerr := s.repo.CreateJob(job)
-		if cerr != nil {
-			jobs = append(jobs, map[string]any{"worker_id": wid, "error": cerr.Error()})
-			continue
-		}
-		entry := map[string]any{
-			"job_id":            created.ID,
-			"worker_id":         wid,
-			"status":            created.Status,
-			"command":           in.Command,
-			"approval_required": approval,
-		}
-		if !approval {
-			dispatched, derr := s.dispatchJobToWorker(created.ID, wid)
-			if derr != nil {
-				jobs = append(jobs, map[string]any{"worker_id": wid, "error": derr.Error()})
-				continue
-			}
-			s.workerHub.PushJob(wid, dispatched)
-			entry["status"] = dispatched.Status
-		}
-		jobs = append(jobs, entry)
-	}
-	s.recordAudit("system", "agent", "agent.shell_command", "job", "", map[string]any{
-		"command":    in.Command,
-		"reason":     in.Reason,
-		"risk":       risk,
-		"approval":   approval,
-		"worker_ids": compatible,
-	})
-	dispatchedCount := 0
-	for _, j := range jobs {
-		if j["error"] == nil && !approval {
-			dispatchedCount++
-		}
-	}
-	return map[string]any{
-		"jobs":              jobs,
-		"total":             len(jobs),
-		"summary":           map[string]any{"dispatched": dispatchedCount, "failed_validation": len(validationErrors), "approval_required": approval, "risk_level": risk},
-		"validation_errors": validationErrors,
-	}, nil
+	return runID + ":" + callID + ":" + workerID
 }
 
 // collectIDs merges a single ID string and an array of IDs, deduplicating the result.
@@ -638,10 +607,7 @@ func emptySchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
 }
 func truncateAgentOutput(value string) string {
-	if len(value) > 4000 {
-		return value[:4000] + "..."
-	}
-	return value
+	return model.SanitizeText(value)
 }
 
 // handleAgentRunStream runs the Agent in streaming mode (SSE).
@@ -684,23 +650,27 @@ func (s *Server) handleAgentRunStream(w http.ResponseWriter, r *http.Request, re
 	go func() {
 		defer close(stream)
 		defer close(done)
-		result, err := s.agentRuntime.RunStreaming(r.Context(), req.Input, history, stream)
+		run, err := s.createPersistentRun(req.Input, convID, history)
+		var events []agent.Event
+		if err == nil {
+			run, events, err = s.executePersistentRun(r.Context(), run.ID)
+		}
 		// Send final result as a special event.
-		finalData := map[string]any{"steps": result.Steps}
+		finalData := map[string]any{"steps": run.NextStep - 1, "run": run}
 		if err != nil {
 			finalData["error"] = err.Error()
 		}
-		if result.Answer != "" {
-			finalData["answer"] = result.Answer
+		if run.Answer != "" {
+			finalData["answer"] = run.Answer
 		}
-		pendingApprovals := pendingApprovalsFromEvents(result.Events)
+		pendingApprovals := pendingApprovalsFromEvents(events)
 		if len(pendingApprovals) > 0 {
 			finalData["pending_approvals"] = pendingApprovals
 		}
 		finalData["conversation_id"] = convID
 
 		// Persist BEFORE sending done so the frontend sees them on refresh.
-		for _, ev := range result.Events {
+		for _, ev := range events {
 			if ev.Type != "tool" {
 				continue
 			}
@@ -710,17 +680,20 @@ func (s *Server) handleAgentRunStream(w http.ResponseWriter, r *http.Request, re
 			msg.ToolData, _ = ev.Data.(map[string]any)
 			_ = s.repo.AddConversationMessage(msg)
 		}
-		if result.Answer != "" {
+		if run.Answer != "" {
 			_ = s.repo.AddConversationMessage(model.ConversationMessage{
-				ConversationID: convID, Role: "assistant", Content: result.Answer, Step: result.Steps + 1,
+				ConversationID: convID, Role: "assistant", Content: run.Answer, Step: run.NextStep,
 			})
+		}
+		for _, ev := range events {
+			stream <- ev
 		}
 
 		// Send final event.
 		finalJSON, _ := json.Marshal(finalData)
 		stream <- agent.Event{Step: -1, Type: "done", Data: string(finalJSON)}
 		user := currentUser(r)
-		s.recordAudit("user", user.Username, "agent.run.completed", "agent_run", "", map[string]any{"steps": result.Steps, "conversation_id": convID})
+		s.recordAudit("user", user.Username, "agent.run.completed", "agent_run", run.ID, map[string]any{"steps": run.NextStep - 1, "conversation_id": convID, "status": run.Status})
 	}()
 
 	for ev := range stream {

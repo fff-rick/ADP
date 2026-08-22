@@ -55,6 +55,51 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	out.WriteString("# HELP adp_job_schedule_latency_seconds_avg Average queue-to-start latency in seconds.\n")
 	out.WriteString("# TYPE adp_job_schedule_latency_seconds_avg gauge\n")
 	writeMetricf(&out, "adp_job_schedule_latency_seconds_avg %.6f\n", snapshot.AvgScheduleLatencySeconds)
+	if s.agentMetrics != nil {
+		m := s.agentMetrics.snapshot()
+		out.WriteString("# HELP adp_agent_run_success_rate Successful controlled Agent runs divided by completed runs.\n# TYPE adp_agent_run_success_rate gauge\n")
+		runRate := float64(0)
+		if m.runs > 0 {
+			runRate = float64(m.successfulRuns) / float64(m.runs)
+		}
+		writeMetricf(&out, "adp_agent_run_success_rate %.6f\n", runRate)
+		out.WriteString("# HELP adp_agent_tool_error_total Tool calls returning an error.\n# TYPE adp_agent_tool_error_total counter\n")
+		writeMetricf(&out, "adp_agent_tool_error_total %d\n", m.toolErrors)
+		out.WriteString("# HELP adp_agent_policy_rejection_total Policy-enforced tool rejections.\n# TYPE adp_agent_policy_rejection_total counter\n")
+		writeMetricf(&out, "adp_agent_policy_rejection_total %d\n", m.policyRejections)
+		out.WriteString("# HELP adp_agent_steps_avg Average LLM steps per Agent run.\n# TYPE adp_agent_steps_avg gauge\n")
+		avgSteps := float64(0)
+		if m.runs > 0 {
+			avgSteps = float64(m.steps) / float64(m.runs)
+		}
+		writeMetricf(&out, "adp_agent_steps_avg %.6f\n", avgSteps)
+		out.WriteString("# HELP adp_agent_approval_wait_seconds_avg Average time a job waited for human approval.\n# TYPE adp_agent_approval_wait_seconds_avg gauge\n")
+		approvalWait := float64(0)
+		if m.approvals > 0 {
+			approvalWait = m.approvalWait.Seconds() / float64(m.approvals)
+		}
+		writeMetricf(&out, "adp_agent_approval_wait_seconds_avg %.6f\n", approvalWait)
+		out.WriteString("# HELP adp_agent_model_latency_seconds_avg Average model completion latency.\n# TYPE adp_agent_model_latency_seconds_avg gauge\n")
+		modelLatency := float64(0)
+		if m.modelCalls > 0 {
+			modelLatency = m.modelLatency.Seconds() / float64(m.modelCalls)
+		}
+		writeMetricf(&out, "adp_agent_model_latency_seconds_avg %.6f\n", modelLatency)
+		out.WriteString("# HELP adp_agent_tool_latency_seconds_avg Average local tool latency.\n# TYPE adp_agent_tool_latency_seconds_avg gauge\n")
+		toolLatency := float64(0)
+		if m.toolLatencyCalls > 0 {
+			toolLatency = m.toolLatency.Seconds() / float64(m.toolLatencyCalls)
+		}
+		writeMetricf(&out, "adp_agent_tool_latency_seconds_avg %.6f\n", toolLatency)
+		out.WriteString("# HELP adp_agent_tokens_total Model token usage reported by the provider.\n# TYPE adp_agent_tokens_total counter\n")
+		writeMetricf(&out, "adp_agent_tokens_total %d\n", m.totalTokens)
+		out.WriteString("# HELP adp_agent_prompt_tokens_total Prompt token usage reported by the provider.\n# TYPE adp_agent_prompt_tokens_total counter\n")
+		writeMetricf(&out, "adp_agent_prompt_tokens_total %d\n", m.promptTokens)
+		out.WriteString("# HELP adp_agent_completion_tokens_total Completion token usage reported by the provider.\n# TYPE adp_agent_completion_tokens_total counter\n")
+		writeMetricf(&out, "adp_agent_completion_tokens_total %d\n", m.completionTokens)
+		out.WriteString("# HELP adp_agent_token_cost_usd_total Configured-price estimate of model token cost in USD.\n# TYPE adp_agent_token_cost_usd_total counter\n")
+		writeMetricf(&out, "adp_agent_token_cost_usd_total %.8f\n", m.tokenCostUSD)
+	}
 	if _, err := w.Write([]byte(out.String())); err != nil {
 		return
 	}

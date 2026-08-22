@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"adp/internal/infrastructure/llm"
@@ -34,7 +35,23 @@ func TestRuntimeRunsToolLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Answer != "worker is healthy" || result.Steps != 2 || !tool.called {
+	if !strings.Contains(result.Answer, "worker is healthy") || !strings.Contains(result.Answer, "本次工具证据") || !strings.Contains(result.Answer, "历史参考案例") || result.Steps != 2 || !tool.called {
 		t.Fatalf("unexpected result: %+v, tool called=%v", result, tool.called)
+	}
+}
+
+func TestRuntimePausesAfterApprovedOperationIsRecorded(t *testing.T) {
+	client := &scriptedClient{}
+	tool := &testTool{}
+	var recordedCall, recordedResult bool
+	result, err := New(client, []Tool{tool}, 3, 0).RunMessages(context.Background(), []llm.Message{
+		{Role: "system", Content: SystemPrompt}, {Role: "user", Content: "restart service"},
+	}, 1, nil, Observer{
+		OnToolCall:     func(_ int, _ llm.ToolCall) error { recordedCall = true; return nil },
+		OnToolResult:   func(_ int, _ llm.ToolCall, _ map[string]any) error { recordedResult = true; return nil },
+		PauseAfterTool: func(_ llm.ToolCall, _ map[string]any) bool { return true },
+	})
+	if err != nil || !result.Paused || result.Steps != 1 || !recordedCall || !recordedResult {
+		t.Fatalf("unexpected paused result: %+v, call=%v result=%v err=%v", result, recordedCall, recordedResult, err)
 	}
 }
