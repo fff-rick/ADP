@@ -1,12 +1,12 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: adp-prod
+  name: adp
   namespace: argocd
 spec:
   project: adp
   source:
-    repoURL: git@gitee.com:YOUR_ORG/adp-gitops.git
+    repoURL: https://github.com/fff-rick/ADP.git
     targetRevision: main
     path: deploy/k8s/overlays/prod
   destination:
