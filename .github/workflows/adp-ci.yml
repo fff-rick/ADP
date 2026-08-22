@@ -52,7 +52,8 @@ jobs:
     needs:
       - lint
       - test
-    if: github.event_name == 'pull_request'
+    # PR 仅校验质量；发布与仓库回写仅允许在合并后的 main push 中执行。
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
