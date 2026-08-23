@@ -26,7 +26,7 @@ func (s *Server) createPersistentRun(input, conversationID string, history []llm
 	return s.repo.CreateAgentRun(model.AgentRun{Input: model.SanitizeText(input), ConversationID: conversationID, Status: model.AgentRunStatusQueued, TraceID: fmt.Sprintf("trace-%d", time.Now().UnixNano()), PolicyVersion: agentPolicyVersion, PromptVersion: agentPromptVersion, Transcript: transcript, NextStep: 1})
 }
 
-func (s *Server) executePersistentRun(ctx context.Context, runID string) (model.AgentRun, []agent.Event, error) {
+func (s *Server) executePersistentRun(ctx context.Context, runID string, stream chan<- agent.Event) (model.AgentRun, []agent.Event, error) {
 	run, err := s.repo.GetAgentRun(runID)
 	if err != nil {
 		return model.AgentRun{}, nil, err
@@ -87,7 +87,7 @@ func (s *Server) executePersistentRun(ctx context.Context, runID string) (model.
 		},
 		PauseAfterTool: func(_ llm.ToolCall, payload map[string]any) bool { return payloadNeedsApproval(payload) },
 	}
-	result, runErr := s.agentRuntime.RunMessages(ctx, transcript, run.NextStep, nil, observer)
+	result, runErr := s.agentRuntime.RunMessages(ctx, transcript, run.NextStep, stream, observer)
 	run.NextStep = result.Steps + 1
 	if result.Paused {
 		run.Status = model.AgentRunStatusWaitingApproval

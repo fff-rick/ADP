@@ -185,7 +185,7 @@ func (s *Server) resumeInterruptedAgentRuns() {
 		return
 	}
 	for _, run := range runs {
-		if _, _, err := s.executePersistentRun(context.Background(), run.ID); err != nil {
+		if _, _, err := s.executePersistentRun(context.Background(), run.ID, nil); err != nil {
 			log.Printf("agent run recovery failed for %s: %v", run.ID, err)
 		}
 	}
