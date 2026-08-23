@@ -633,6 +633,7 @@ async function handleTaskSubmit(event) {
   var agentBubble = null;
   var agentContent = null;
   var toolList = null;
+  var liveAnswer = null;
   var finalAnswer = "";
   if (msgEl) {
     agentBubble = document.createElement("div");
@@ -644,27 +645,6 @@ async function handleTaskSubmit(event) {
     msgEl.appendChild(agentBubble);
     msgEl.scrollTop = msgEl.scrollHeight;
   }
-  if (elements.taskInput) elements.taskInput.value = "";
-
-  // Create Agent bubble for streaming.
-  var agentBubble = null;
-  var agentContent = null;
-  var toolList = null;
-  var finalAnswer = "";
-  if (msgEl) {
-    agentBubble = document.createElement("div");
-    agentBubble.style.cssText = "display:flex;justify-content:flex-start;margin:8px 0;";
-    agentContent = document.createElement("div");
-    agentContent.style.cssText = "max-width:85%;background:var(--surface-inset);border:1px solid var(--border);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:.8125rem;line-height:1.6;min-width:60px;";
-    agentContent.innerHTML = '<span style="color:var(--text-tertiary);">思考中…</span>';
-    agentBubble.appendChild(agentContent);
-    msgEl.appendChild(agentBubble);
-    msgEl.scrollTop = msgEl.scrollHeight;
-  }
-
-  var indicator = document.getElementById("agent-running-indicator");
-  if (indicator) indicator.style.display = "flex";
-
   var indicator = document.getElementById("agent-running-indicator");
   if (indicator) indicator.style.display = "flex";
 
@@ -699,7 +679,18 @@ async function handleTaskSubmit(event) {
         if (!line.startsWith("data: ")) continue;
         try {
           var ev = JSON.parse(line.slice(6));
-          if (ev.type === "tool") {
+          if (ev.type === "assistant_delta" && ev.data) {
+            // True model-token streaming: show text as soon as the provider
+            // sends it, while keeping the final Markdown rendering for done.
+            if (!liveAnswer && agentContent) {
+              var placeholder = agentContent.querySelector("span");
+              if (placeholder && placeholder.textContent === "思考中…") placeholder.remove();
+              liveAnswer = document.createElement("div");
+              liveAnswer.style.cssText = "white-space:pre-wrap;word-break:break-word;";
+              agentContent.appendChild(liveAnswer);
+            }
+            if (liveAnswer) liveAnswer.textContent += String(ev.data);
+          } else if (ev.type === "tool") {
             // Add collapsed tool entry.
             if (!toolList) {
               toolList = document.createElement("div");
@@ -745,13 +736,19 @@ async function handleTaskSubmit(event) {
     // Remove the initial "思考中…" placeholder.
     var placeholder = agentContent.querySelector("span");
     if (placeholder && placeholder.textContent === "思考中…") placeholder.remove();
-    var sep = document.createElement("div");
-    sep.style.cssText = "border-top:1px solid var(--border);margin:8px 0;";
-    agentContent.appendChild(sep);
-    var answer = document.createElement("div");
-    answer.className = "md-content";
-    answer.innerHTML = markdownToHTML(finalAnswer);
-    agentContent.appendChild(answer);
+    if (liveAnswer) {
+      liveAnswer.className = "md-content";
+      liveAnswer.style.cssText = "";
+      liveAnswer.innerHTML = markdownToHTML(finalAnswer);
+    } else {
+      var sep = document.createElement("div");
+      sep.style.cssText = "border-top:1px solid var(--border);margin:8px 0;";
+      agentContent.appendChild(sep);
+      var answer = document.createElement("div");
+      answer.className = "md-content";
+      answer.innerHTML = markdownToHTML(finalAnswer);
+      agentContent.appendChild(answer);
+    }
   }
 
   // Show pending approvals.

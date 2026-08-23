@@ -72,7 +72,7 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 		// retry or second model submission is needed after a restart.
 		if *req.Approved && job.SourceID != "" {
 			go func(runID string) {
-				if _, _, resumeErr := s.executePersistentRun(context.Background(), runID); resumeErr != nil {
+				if _, _, resumeErr := s.executePersistentRun(context.Background(), runID, nil); resumeErr != nil {
 					s.recordAudit("system", "agent", "agent.run.resume_failed", "agent_run", runID, map[string]any{"error": resumeErr.Error()})
 				}
 			}(job.SourceID)

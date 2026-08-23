@@ -135,7 +135,24 @@ func (r *Runtime) RunMessages(ctx context.Context, messages []llm.Message, start
 	}
 	for step := startStep; step <= r.maxSteps; step++ {
 		started := time.Now()
-		completion, err := r.client.Complete(ctx, llm.CompletionRequest{Messages: messages, Tools: definitions})
+		request := llm.CompletionRequest{Messages: messages, Tools: definitions}
+		var completion llm.Completion
+		var err error
+		if streamClient, ok := r.client.(llm.StreamingClient); ok && stream != nil {
+			completion, err = streamClient.CompleteStream(ctx, request, func(delta string) error {
+				if delta == "" {
+					return nil
+				}
+				select {
+				case stream <- Event{Step: step, Type: "assistant_delta", Data: delta}:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+		} else {
+			completion, err = r.client.Complete(ctx, request)
+		}
 		if err != nil {
 			return result, fmt.Errorf("agent step %d: %w", step, err)
 		}

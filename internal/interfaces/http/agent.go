@@ -62,7 +62,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	run, events, err := s.executePersistentRun(r.Context(), run.ID)
+	run, events, err := s.executePersistentRun(r.Context(), run.ID, nil)
 	if err != nil {
 		// Still persist the error as an assistant message.
 		_ = s.repo.AddConversationMessage(model.ConversationMessage{
@@ -639,6 +639,9 @@ func (s *Server) handleAgentRunStream(w http.ResponseWriter, r *http.Request, re
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Avoid proxy buffering when ADP is served through an Nginx-compatible
+	// ingress. NodePort clients ignore this header.
+	w.Header().Set("X-Accel-Buffering", "no")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("streaming not supported"))
@@ -653,7 +656,7 @@ func (s *Server) handleAgentRunStream(w http.ResponseWriter, r *http.Request, re
 		run, err := s.createPersistentRun(req.Input, convID, history)
 		var events []agent.Event
 		if err == nil {
-			run, events, err = s.executePersistentRun(r.Context(), run.ID)
+			run, events, err = s.executePersistentRun(r.Context(), run.ID, stream)
 		}
 		// Send final result as a special event.
 		finalData := map[string]any{"steps": run.NextStep - 1, "run": run}
@@ -685,10 +688,6 @@ func (s *Server) handleAgentRunStream(w http.ResponseWriter, r *http.Request, re
 				ConversationID: convID, Role: "assistant", Content: run.Answer, Step: run.NextStep,
 			})
 		}
-		for _, ev := range events {
-			stream <- ev
-		}
-
 		// Send final event.
 		finalJSON, _ := json.Marshal(finalData)
 		stream <- agent.Event{Step: -1, Type: "done", Data: string(finalJSON)}
