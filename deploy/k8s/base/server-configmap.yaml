@@ -9,8 +9,8 @@ metadata:
 data:
   ADP_ADDR: ":8080"
   ADP_WORKER_GRPC_ADDR: ":9090"
-  ADP_LLM_BASE_URL: "https://api.deepseek.com"
-  ADP_LLM_MODEL: "deepseek-v4-pro"
+  ADP_AGENT_BASE_URL: "https://api.deepseek.com"
+  ADP_AGENT_MODEL: "deepseek-v4-pro"
   ADP_AI_CONTEXT: "/etc/adp/ai/ai_context.yaml"
   # Managed templates and policies are versioned with the Server image.
   ADP_MANAGED_CONFIG_DIR: "/configs/managed"
