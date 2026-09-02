@@ -17,6 +17,10 @@ const elements = {
   logoutButton: byId("logout-button"),
   metricsGrid: byId("metrics-grid"),
   approvalList: byId("approval-list"),
+  caseReviewList: byId("case-review-list"),
+  embeddingFailureList: byId("embedding-failure-list"),
+  caseReviewDialog: byId("case-review-dialog"),
+  caseReviewForm: byId("case-review-form"),
   auditList: byId("audit-list"),
   userForm: byId("user-form"),
   usersAccessNote: byId("users-access-note"),
@@ -43,6 +47,12 @@ const elements = {
   configList: byId("config-list"),
   configRefresh: byId("config-refresh"),
   configsAccessNote: byId("configs-access-note"),
+  knowledgeList: byId("knowledge-list"),
+  knowledgeSearchForm: byId("knowledge-search-form"),
+  knowledgeSearch: byId("knowledge-search"),
+  knowledgeImportPanel: byId("knowledge-import-panel"),
+  knowledgeImportForm: byId("knowledge-import-form"),
+  knowledgeImportFile: byId("knowledge-import-file"),
   themeToggle: byId("theme-toggle"),
 };
 
@@ -114,8 +124,14 @@ function bindCommonEvents() {
   elements.configFile && elements.configFile.addEventListener("change", handleConfigFileSelect);
   elements.configKind && elements.configKind.addEventListener("change", refreshConfigsPage);
   elements.configRefresh && elements.configRefresh.addEventListener("click", refreshConfigsPage);
+  elements.knowledgeSearchForm && elements.knowledgeSearchForm.addEventListener("submit", handleKnowledgeSearch);
+  elements.knowledgeImportForm && elements.knowledgeImportForm.addEventListener("submit", handleKnowledgeImport);
   elements.configList && elements.configList.addEventListener("click", handleConfigListAction);
   elements.approvalList && elements.approvalList.addEventListener("click", handleApprovalAction);
+  elements.caseReviewList && elements.caseReviewList.addEventListener("click", handleCaseReviewAction);
+  elements.embeddingFailureList && elements.embeddingFailureList.addEventListener("click", handleEmbeddingFailureAction);
+  elements.caseReviewForm && elements.caseReviewForm.addEventListener("click", handleCaseReviewDialogAction);
+  byId("case-review-cancel") && byId("case-review-cancel").addEventListener("click", function() { elements.caseReviewDialog.close(); });
   elements.runReplayButton && elements.runReplayButton.addEventListener("click", function() { replayAgentRunEvents(true); });
   elements.agentRunMonitor && elements.agentRunMonitor.addEventListener("click", handleAgentRunAction);
   var conversationMessages = document.getElementById("conversation-messages");
@@ -594,6 +610,7 @@ async function refreshYAMLList() {
 
 var currentConversationID = "";
 var currentRunID = "";
+var activeResumeStream = null;
 
 function runStorageKey(conversationID) {
   return "adp.agent.run." + (conversationID || "new");
@@ -781,8 +798,68 @@ async function handleBatchApproval(approvals, approved) {
 
   showToast(approved ? "已批准，服务端正在恢复该 run…" : "已拒绝，关联 run 已取消");
   await refreshAgentRunMonitor();
-  if (approved) window.setTimeout(refreshAgentRunMonitor, 800);
+  if (approved) followApprovedRun();
   await refreshTasksPage();
+}
+
+// The original POST SSE ends while the run is waiting for approval. Subscribe
+// to the same run after approval so resumed token deltas render immediately.
+async function followApprovedRun() {
+  if (!currentRunID || !state.token) return;
+  if (activeResumeStream) activeResumeStream.abort();
+  activeResumeStream = new AbortController();
+  var msgEl = document.getElementById("conversation-messages");
+  var content = null;
+  if (msgEl) {
+    var bubble = document.createElement("div");
+    bubble.style.cssText = "display:flex;justify-content:flex-start;margin:8px 0;";
+    content = document.createElement("div");
+    content.style.cssText = "max-width:85%;background:var(--surface-inset);border:1px solid var(--border);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:.8125rem;line-height:1.6;white-space:pre-wrap;word-break:break-word;";
+    content.textContent = "命令已批准，正在继续…";
+    bubble.appendChild(content); msgEl.appendChild(bubble); msgEl.scrollTop = msgEl.scrollHeight;
+  }
+  try {
+    var response = await fetch("/api/v1/agent/runs/" + encodeURIComponent(currentRunID) + "/events?live=1", {
+      headers: { "Authorization": "Bearer " + state.token }, signal: activeResumeStream.signal,
+    });
+    if (!response.ok) throw new Error("恢复事件连接失败: " + response.status);
+    var reader = response.body.getReader(), decoder = new TextDecoder(), buffer = "", liveText = "";
+    while (true) {
+      var chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, {stream:true});
+      var blocks = buffer.split("\n\n"); buffer = blocks.pop() || "";
+      for (var i = 0; i < blocks.length; i++) {
+        var line = blocks[i].split("\n").filter(function(value) { return value.indexOf("data: ") === 0; })[0];
+        if (!line) continue;
+        try {
+          var event = JSON.parse(line.slice(6));
+          if (event.type === "assistant_delta" && event.data) {
+            liveText += String(event.data);
+            if (content) content.textContent = liveText;
+          } else if (event.type === "tool" && content && !liveText) {
+            content.textContent = "正在执行：" + (event.name || "受控工具") + "…";
+          } else if (event.type === "done") {
+            var done = event.data || {};
+            if (content) {
+              var answer = done.answer || done.error || liveText;
+              content.className = "md-content";
+              content.style.cssText = "max-width:85%;background:var(--surface-inset);border:1px solid var(--border);padding:10px 14px;border-radius:16px 16px 16px 4px;font-size:.8125rem;line-height:1.6;";
+              content.innerHTML = markdownToHTML(answer);
+            }
+            if (done.run) rememberRun(done.run);
+          }
+        } catch (_) {}
+      }
+      if (msgEl) msgEl.scrollTop = msgEl.scrollHeight;
+    }
+  } catch (error) {
+    if (error.name !== "AbortError") showToast(error.message);
+  } finally {
+    activeResumeStream = null;
+    await refreshAgentRunMonitor();
+    await loadConversations();
+  }
 }
 
 async function loadConversations() {
@@ -1070,7 +1147,7 @@ async function handleConversationApproval(jobID, approved) {
 
   showToast(approved ? "已批准，服务端正在恢复该 run…" : "已拒绝，关联 run 已取消");
   await refreshAgentRunMonitor();
-  if (approved) window.setTimeout(refreshAgentRunMonitor, 800);
+  if (approved) followApprovedRun();
   await refreshTasksPage();
 }
 
@@ -1630,6 +1707,9 @@ async function refreshCurrentPage() {
       case "configs":
         await refreshConfigsPage();
         break;
+      case "knowledge":
+        await refreshKnowledgePage();
+        break;
       default:
         await refreshSessionOnly();
         break;
@@ -1640,6 +1720,57 @@ async function refreshCurrentPage() {
       return;
     }
     showToast(error.message);
+  }
+}
+
+async function handleKnowledgeSearch(event) {
+  event.preventDefault();
+  await refreshKnowledgePage();
+}
+
+async function refreshKnowledgePage() {
+  await refreshSessionOnly();
+  if (elements.knowledgeImportPanel) {
+    elements.knowledgeImportPanel.style.display = state.user && state.user.role === "admin" ? "" : "none";
+  }
+  var query = elements.knowledgeSearch ? elements.knowledgeSearch.value.trim() : "";
+  var path = "/api/v1/cases?limit=100" + (query ? "&q=" + encodeURIComponent(query) : "");
+  renderKnowledgeCases(await authedRequest(path));
+}
+
+async function handleKnowledgeImport(event) {
+  event.preventDefault();
+  if (!ensureAuthed()) return;
+  if (!state.user || state.user.role !== "admin") {
+    showToast("仅管理员可导入知识库案例");
+    return;
+  }
+  var file = elements.knowledgeImportFile && elements.knowledgeImportFile.files[0];
+  if (!file) {
+    showToast("请选择 .md 文件");
+    return;
+  }
+  if (!/\.md$/i.test(file.name)) {
+    showToast("仅支持 .md 文件");
+    return;
+  }
+  if (file.size > 1024 * 1024) {
+    showToast("文件不能超过 1 MiB");
+    return;
+  }
+  var form = new FormData();
+  form.append("file", file, file.name);
+  var submit = elements.knowledgeImportForm.querySelector('button[type="submit"]');
+  if (submit) submit.disabled = true;
+  try {
+    var imported = await authedRequest("/api/v1/cases/import", { method: "POST", body: form });
+    elements.knowledgeImportForm.reset();
+    showToast("已导入「" + (imported.title || file.name) + "」，请在首页审核后启用");
+    await refreshKnowledgePage();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    if (submit) submit.disabled = false;
   }
 }
 
@@ -1679,6 +1810,54 @@ async function refreshHomePage() {
   renderSummaryMetrics(summary);
   renderApprovals(summary.pending_approvals);
   renderAuditLogs(summary.recent_audit_logs);
+  if (state.user && state.user.role === "admin") {
+    renderCaseReviews(await authedRequest("/api/v1/cases/pending?limit=10"));
+    renderEmbeddingFailures(await authedRequest("/api/v1/cases/embedding/failed?limit=10"));
+  } else {
+    renderList(elements.caseReviewList, [], function() { return ""; }, "仅管理员可审核案例。");
+    renderList(elements.embeddingFailureList, [], function() { return ""; }, "仅管理员可查看向量任务。");
+  }
+}
+
+async function handleCaseReviewAction(event) {
+  var button = event.target.closest("[data-case-review-id]");
+  if (!button || !ensureAuthed()) return;
+  var item = JSON.parse(button.dataset.caseReview);
+  byId("case-review-id").value = item.id;
+  byId("case-review-root-cause").value = item.root_cause || "";
+  byId("case-review-steps").value = (item.resolution_steps || []).join("\n");
+  byId("case-review-tags").value = (item.environment_tags || []).join(", ");
+  byId("case-review-result").value = item.resolution_result || "";
+  byId("case-review-note").value = "";
+  elements.caseReviewDialog.showModal();
+}
+
+async function handleCaseReviewDialogAction(event) {
+  var button = event.target.closest("[data-case-dialog-action]");
+  if (!button) return;
+  var action = button.dataset.caseDialogAction;
+  var id = valueOf("case-review-id");
+  var split = function(value, separator) { return String(value || "").split(separator).map(function(x) { return x.trim(); }).filter(Boolean); };
+  try {
+    await authedRequest("/api/v1/cases/" + encodeURIComponent(id) + "/review", { method: "POST", body: JSON.stringify({action: action, note: valueOf("case-review-note"), updates: {root_cause: valueOf("case-review-root-cause"), resolution_steps: split(valueOf("case-review-steps"), "\n"), environment_tags: split(valueOf("case-review-tags"), ","), resolution_result: valueOf("case-review-result")}}) });
+    elements.caseReviewDialog.close();
+    showToast(action === "approve" ? "案例已通过并进入向量队列" : "案例已拒绝");
+    await refreshHomePage();
+  } catch (error) { showToast(error.message); }
+}
+
+async function handleEmbeddingFailureAction(event) {
+  var button = event.target.closest("[data-embedding-retry-id]");
+  if (!button || !ensureAuthed()) return;
+  button.disabled = true;
+  try {
+    await authedRequest("/api/v1/cases/" + encodeURIComponent(button.dataset.embeddingRetryId) + "/embedding/retry", { method: "POST" });
+    showToast("向量任务已重新入队");
+    await refreshHomePage();
+  } catch (error) {
+    button.disabled = false;
+    showToast(error.message);
+  }
 }
 
 async function refreshUsersPage() {
@@ -1871,6 +2050,39 @@ async function refreshTasksPage() {
   );
 }
 
+// Keep approval recovery bound to the paused run. Older compatibility
+// functions above submitted a second non-streaming Agent run; these final
+// definitions intentionally override them and preserve the live SSE path.
+async function handleBatchApproval(approvals, approved) {
+  if (!ensureAuthed()) return;
+  window._adpPendingApprovals = null;
+  var box = document.getElementById("approval-action-box");
+  if (box) box.remove();
+  for (var i = 0; i < approvals.length; i++) {
+    try {
+      await authedRequest("/api/v1/approvals/jobs/" + encodeURIComponent(approvals[i].job_id), {
+        method: "POST", body: JSON.stringify({ approved: approved, comment: approved ? "Approved" : "Rejected" }),
+      });
+    } catch (error) { showToast("审批失败: " + error.message); return; }
+  }
+  showToast(approved ? "已批准，服务端正在恢复该 run…" : "已拒绝，关联 run 已取消");
+  if (approved) followApprovedRun();
+  await refreshTasksPage();
+}
+
+async function handleConversationApproval(jobID, approved) {
+  if (!ensureAuthed()) return;
+  window._adpPendingApprovals = null;
+  try {
+    await authedRequest("/api/v1/approvals/jobs/" + encodeURIComponent(jobID), {
+      method: "POST", body: JSON.stringify({ approved: approved, comment: approved ? "Approved" : "Rejected" }),
+    });
+  } catch (error) { showToast("审批失败: " + error.message); return; }
+  showToast(approved ? "已批准，服务端正在恢复该 run…" : "已拒绝，关联 run 已取消");
+  if (approved) followApprovedRun();
+  await refreshTasksPage();
+}
+
 /* ── Managed Configs ── */
 
 function handleConfigFileSelect(event) {
@@ -2018,6 +2230,8 @@ function renderSummaryMetrics(summary) {
   if (!elements.metricsGrid) return;
 
   var agent = summary.agent_metrics || {};
+  var rag = summary.rag_metrics || {};
+  var ragRuntime = summary.rag_runtime_metrics || {};
   var percentage = function(value) { return (Number(value || 0) * 100).toFixed(1) + "%"; };
   var seconds = function(value) { return Number(value || 0).toFixed(2) + "s"; };
   var metrics = [
@@ -2030,6 +2244,8 @@ function renderSummaryMetrics(summary) {
     ["平均步骤", Number(agent.avg_steps || 0).toFixed(1), "每次 Agent run"],
     ["模型 / 工具延迟", seconds(agent.model_latency_seconds) + " / " + seconds(agent.tool_latency_seconds), "平均调用耗时"],
     ["Token 成本", "$" + Number(agent.token_cost_usd || 0).toFixed(4), (agent.total_tokens || 0) + " tokens"],
+    ["RAG 向量队列", rag.queued || 0, (rag.ready || 0) + " ready / " + (rag.failed || 0) + " failed"],
+    ["RAG 生成延迟", seconds(ragRuntime.generation_latency_seconds), (ragRuntime.generation_calls || 0) + " 次 / " + (ragRuntime.generation_failures || 0) + " 次失败"],
   ];
 
   elements.metricsGrid.innerHTML = metrics.map(function(m) {
@@ -2064,6 +2280,75 @@ function renderApprovals(items) {
     },
     "当前没有待审批任务。"
   );
+}
+
+function renderCaseReviews(items) {
+  renderList(elements.caseReviewList, items, function(incidentCase) {
+    return '<div class="list-card" style="display:block;">' +
+      '<strong style="font-size:.8125rem;">' + escapeHTML(incidentCase.title || "未命名案例") + '</strong>' +
+      '<div style="font-size:.6875rem;color:var(--text-secondary);margin:5px 0;white-space:pre-wrap;">' + escapeHTML(incidentCase.evidence_summary || incidentCase.summary || "无可用证据摘要") + '</div>' +
+      '<div class="mono" style="font-size:.625rem;color:var(--text-tertiary);">Run: ' + escapeHTML(incidentCase.source_run_id || "--") + '</div>' +
+      '<div style="display:flex;gap:6px;margin-top:8px;">' +
+        '<button class="btn btn-xs btn-primary" type="button" data-case-review-id="' + escapeHTML(incidentCase.id) + '" data-case-review=\'' + escapeHTML(JSON.stringify(incidentCase)) + '\'>审核</button>' +
+      '</div></div>';
+  }, "当前没有待审核案例。");
+}
+
+function renderEmbeddingFailures(items) {
+  renderList(elements.embeddingFailureList, items, function(item) {
+    var retryAt = item.next_attempt_at ? "下次自动重试：" + formatTime(item.next_attempt_at) : "已达到自动重试上限";
+    return '<div class="list-card" style="display:block;">' +
+      '<strong style="font-size:.8125rem;">' + escapeHTML(item.case_title || item.case_id) + '</strong>' +
+      '<div style="font-size:.6875rem;color:var(--danger,#d64b4b);margin:5px 0;white-space:pre-wrap;word-break:break-word;">' + escapeHTML(item.last_error || "未知向量生成错误") + '</div>' +
+      '<div class="mono" style="font-size:.625rem;color:var(--text-tertiary);">失败次数：' + escapeHTML(String(item.attempts || 0)) + ' · ' + escapeHTML(retryAt) + '</div>' +
+      '<div style="display:flex;gap:6px;margin-top:8px;">' +
+        '<button class="btn btn-xs btn-primary" type="button" data-embedding-retry-id="' + escapeHTML(item.case_id) + '">立即重试</button>' +
+      '</div></div>';
+  }, "当前没有失败的向量任务。");
+}
+
+function renderKnowledgeCases(items) {
+  renderList(elements.knowledgeList, items, function(incidentCase) {
+    var preview = incidentCase.evidence_summary || incidentCase.alert_symptoms || incidentCase.summary || "暂无摘要";
+    var embedding = embeddingStatusDisplay(incidentCase.embedding_status);
+    var fullText = [
+      ["症状", incidentCase.alert_symptoms || incidentCase.summary],
+      ["环境", (incidentCase.environment_tags || []).join(", ")],
+      ["证据摘要", incidentCase.evidence_summary],
+      ["已确认根因", incidentCase.root_cause],
+      ["处置步骤", (incidentCase.resolution_steps || []).join("\n")],
+      ["处置结果", incidentCase.resolution_result],
+      ["历史建议", (incidentCase.suggestions || []).join("\n")]
+    ].filter(function(part) { return part[1]; }).map(function(part) {
+      return '<strong style="font-size:.75rem;">' + escapeHTML(part[0]) + '</strong><div style="white-space:pre-wrap;margin:3px 0 10px;">' + escapeHTML(String(part[1])) + '</div>';
+    }).join("");
+    return '<article class="list-card" style="display:block;">' +
+      '<div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">' +
+        '<strong style="font-size:.875rem;">' + escapeHTML(incidentCase.title || "未命名案例") + '</strong>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">' +
+          '<span class="status-pill status-success"><span class="status-dot"></span>approved</span>' +
+          '<span class="status-pill" style="background:' + embedding.background + ';color:' + embedding.color + ';" title="' + escapeHTML(embedding.title) + '"><span class="status-dot" style="background:' + embedding.color + ';"></span>向量：' + escapeHTML(embedding.label) + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div style="font-size:.75rem;color:var(--text-secondary);margin:7px 0;white-space:pre-wrap;">' + escapeHTML(truncateText(preview, 180)) + '</div>' +
+      '<div class="mono" style="font-size:.625rem;color:var(--text-tertiary);">' + escapeHTML(incidentCase.trigger_type || "--") + ' · ' + escapeHTML(incidentCase.fault_type || "--") + ' · ' + escapeHTML(formatTime(incidentCase.updated_at)) + '</div>' +
+      '<details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--accent);font-size:.75rem;">展开完整案例</summary><div style="font-size:.75rem;color:var(--text-secondary);padding:10px 0 2px;">' + fullText + '</div></details>' +
+    '</article>';
+  }, "暂无已审核通过的知识库案例。");
+}
+
+function embeddingStatusDisplay(status) {
+  switch (status) {
+    case "ready": return { label: "已就绪", title: "已生成向量，可参与 RAG 语义召回", background: "var(--success-bg, #e8f7ee)", color: "var(--success, #198754)" };
+    case "queued": return { label: "生成中", title: "已入向量队列，尚未生成完成", background: "var(--warning-bg, #fff4d6)", color: "var(--warning, #9a6700)" };
+    case "failed": return { label: "失败", title: "向量生成失败；管理员可在首页查看错误并重试", background: "var(--danger-bg, #fdeaea)", color: "var(--danger, #c53030)" };
+    default: return { label: "未入队", title: "尚未创建向量任务，不能参与 RAG 语义召回", background: "var(--surface-inset)", color: "var(--text-secondary)" };
+  }
+}
+
+function truncateText(value, maxLength) {
+  value = String(value || "");
+  return value.length > maxLength ? value.slice(0, maxLength) + "…" : value;
 }
 
 function renderAuditLogs(items) {
@@ -2155,9 +2440,13 @@ async function authedRequest(url, options) {
 
 async function request(url, options) {
   options = options || {};
+  var headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
+  if (options.body instanceof FormData) {
+    delete headers["Content-Type"];
+  }
   var response = await window.fetch(url, {
     method: options.method || "GET",
-    headers: Object.assign({ "Content-Type": "application/json" }, options.headers || {}),
+    headers: headers,
     body: options.body,
   });
 

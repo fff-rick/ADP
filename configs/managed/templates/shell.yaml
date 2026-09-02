@@ -17,7 +17,6 @@ templates:
     risk_level: low
     parameters:
       - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
-      - {name: ServiceType, description: 服务类型, required: true, default: shell}
       - {name: Port, description: 端口号, required: true}
   - code: check_process
     name: 进程存活检查
@@ -27,7 +26,6 @@ templates:
     risk_level: low
     parameters:
       - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
-      - {name: ServiceType, description: 服务类型, required: true, default: shell}
       - {name: ProcessName, description: 进程名称, required: true}
   - code: disk_usage_check
     name: 磁盘使用检查
@@ -45,7 +43,6 @@ templates:
     risk_level: low
     parameters:
       - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
-      - {name: ServiceType, description: 服务类型, required: true, default: http}
       - {name: URL, description: 检查地址, required: true}
       - {name: Timeout, description: 超时秒数, required: false, default: "10"}
   - code: read_log_tail
@@ -56,7 +53,6 @@ templates:
     risk_level: low
     parameters:
       - {name: ServiceProfile, description: Worker 本地服务配置, required: true}
-      - {name: ServiceType, description: 服务类型, required: true, default: shell}
       - {name: LogFile, description: 日志文件, required: true}
       - {name: Lines, description: 行数, required: false, default: "50"}
   - code: host_diagnostics

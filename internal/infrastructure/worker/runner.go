@@ -81,7 +81,7 @@ func (r *Runner) Execute(job model.Job, workerID string) (bool, string) {
 	}
 
 	// Resolve ServiceProfile parameters if present.
-	params, _, err := r.resolveServiceProfile(job.Parameters)
+	params, _, err := r.resolveServiceProfile(job.Parameters, job.WorkerType)
 	if err != nil {
 		return false, fmt.Sprintf("service profile: %v", err)
 	}
@@ -148,7 +148,7 @@ func (r *Runner) executeShellCommand(cmd string) (bool, string) {
 	}
 }
 
-func (r *Runner) resolveServiceProfile(params map[string]string) (map[string]string, *config.RuntimeServiceProfile, error) {
+func (r *Runner) resolveServiceProfile(params map[string]string, jobType string) (map[string]string, *config.RuntimeServiceProfile, error) {
 	p := cloneStringMap(params)
 	name := strings.TrimSpace(p["ServiceProfile"])
 	if name == "" {
@@ -158,10 +158,16 @@ func (r *Runner) resolveServiceProfile(params map[string]string) (map[string]str
 		return nil, nil, fmt.Errorf("services config is not loaded")
 	}
 	serviceType := strings.ToLower(strings.TrimSpace(p["ServiceType"]))
-	if serviceType == "" {
-		return nil, nil, fmt.Errorf("ServiceType is required when ServiceProfile is set")
+	var profile config.RuntimeServiceProfile
+	var err error
+	if name == "auto" {
+		if serviceType == "" {
+			serviceType = strings.ToLower(strings.TrimSpace(jobType))
+		}
+		profile, err = r.serviceCatalog.ResolveAuto(serviceType)
+	} else {
+		profile, err = r.serviceCatalog.Resolve(name, serviceType)
 	}
-	profile, err := r.serviceCatalog.Resolve(name, serviceType)
 	if err != nil {
 		return nil, nil, err
 	}

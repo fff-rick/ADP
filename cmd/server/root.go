@@ -61,10 +61,20 @@ func init() {
 	serveCmd.Flags().String("agent-api-key", "", "Agent model API key")
 	serveCmd.Flags().String("agent-model", "", "Agent model name")
 	serveCmd.Flags().Int("agent-max-steps", 20, "Maximum tool-calling steps per Agent run")
+	serveCmd.Flags().Int("agent-context-window-tokens", 0, "Configured model context window tokens; 0 records estimates without enforcing a budget")
+	serveCmd.Flags().Int("agent-reserved-output-tokens", 4096, "Tokens reserved for each Agent model output")
+	serveCmd.Flags().Float64("agent-context-hard-usage-ratio", 0.80, "Maximum fraction of usable context allowed for Agent input")
+	serveCmd.Flags().Int("agent-tool-evidence-max-tokens", 600, "Maximum tokens retained from one long tool result in Agent context")
+	serveCmd.Flags().Bool("agent-context-shadow-enabled", false, "Record baseline versus compacted Agent context metrics without changing requests")
 	serveCmd.Flags().Float64("agent-input-token-cost-usd-per-1k", 0, "Model input-token cost estimate in USD per 1K tokens")
 	serveCmd.Flags().Float64("agent-output-token-cost-usd-per-1k", 0, "Model output-token cost estimate in USD per 1K tokens")
 	serveCmd.Flags().String("managed-config-dir", "configs/managed", "Source-controlled managed YAML configuration directory")
 	serveCmd.Flags().String("managed-config-sync-mode", "missing", "Managed config sync mode: missing or enforce")
+	serveCmd.Flags().Bool("rag-enabled", false, "Enable reviewed incident RAG")
+	serveCmd.Flags().String("rag-embedding-base-url", "", "Embedding API base URL")
+	serveCmd.Flags().String("rag-embedding-api-key", "", "Embedding API key")
+	serveCmd.Flags().String("rag-embedding-model", "", "Embedding model name")
+	serveCmd.Flags().Int("rag-embedding-dimensions", 1024, "Embedding vector dimensions")
 	serveCmd.Flags().String("config", "", "Path to YAML config file")
 
 	// Bind flags to viper.
@@ -80,10 +90,20 @@ func init() {
 	_ = viper.BindPFlag("agent.api_key", serveCmd.Flags().Lookup("agent-api-key"))
 	_ = viper.BindPFlag("agent.model", serveCmd.Flags().Lookup("agent-model"))
 	_ = viper.BindPFlag("agent.max_steps", serveCmd.Flags().Lookup("agent-max-steps"))
+	_ = viper.BindPFlag("agent.context_window_tokens", serveCmd.Flags().Lookup("agent-context-window-tokens"))
+	_ = viper.BindPFlag("agent.reserved_output_tokens", serveCmd.Flags().Lookup("agent-reserved-output-tokens"))
+	_ = viper.BindPFlag("agent.context_hard_usage_ratio", serveCmd.Flags().Lookup("agent-context-hard-usage-ratio"))
+	_ = viper.BindPFlag("agent.tool_evidence_max_tokens", serveCmd.Flags().Lookup("agent-tool-evidence-max-tokens"))
+	_ = viper.BindPFlag("agent.context_shadow_enabled", serveCmd.Flags().Lookup("agent-context-shadow-enabled"))
 	_ = viper.BindPFlag("agent.input_token_cost_usd_per_1k", serveCmd.Flags().Lookup("agent-input-token-cost-usd-per-1k"))
 	_ = viper.BindPFlag("agent.output_token_cost_usd_per_1k", serveCmd.Flags().Lookup("agent-output-token-cost-usd-per-1k"))
 	_ = viper.BindPFlag("managed_config_dir", serveCmd.Flags().Lookup("managed-config-dir"))
 	_ = viper.BindPFlag("managed_config_sync_mode", serveCmd.Flags().Lookup("managed-config-sync-mode"))
+	_ = viper.BindPFlag("rag.enabled", serveCmd.Flags().Lookup("rag-enabled"))
+	_ = viper.BindPFlag("rag.embedding_base_url", serveCmd.Flags().Lookup("rag-embedding-base-url"))
+	_ = viper.BindPFlag("rag.embedding_api_key", serveCmd.Flags().Lookup("rag-embedding-api-key"))
+	_ = viper.BindPFlag("rag.embedding_model", serveCmd.Flags().Lookup("rag-embedding-model"))
+	_ = viper.BindPFlag("rag.embedding_dimensions", serveCmd.Flags().Lookup("rag-embedding-dimensions"))
 
 	// Viper config: env vars with ADP_ prefix, config file support
 	viper.SetEnvPrefix("ADP")
@@ -205,10 +225,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLMAPIKey:                    viper.GetString("agent.api_key"),
 		LLMModel:                     viper.GetString("agent.model"),
 		AgentMaxSteps:                viper.GetInt("agent.max_steps"),
+		AgentContextWindowTokens:     viper.GetInt("agent.context_window_tokens"),
+		AgentReservedOutputTokens:    viper.GetInt("agent.reserved_output_tokens"),
+		AgentContextHardUsageRatio:   viper.GetFloat64("agent.context_hard_usage_ratio"),
+		AgentToolEvidenceMaxTokens:   viper.GetInt("agent.tool_evidence_max_tokens"),
+		AgentContextShadowEnabled:    viper.GetBool("agent.context_shadow_enabled"),
 		AgentInputTokenCostUSDPer1K:  viper.GetFloat64("agent.input_token_cost_usd_per_1k"),
 		AgentOutputTokenCostUSDPer1K: viper.GetFloat64("agent.output_token_cost_usd_per_1k"),
 		ManagedConfigDir:             viper.GetString("managed_config_dir"),
 		ManagedConfigSyncMode:        viper.GetString("managed_config_sync_mode"),
+		RAGEnabled:                   viper.GetBool("rag.enabled"),
+		RAGEmbeddingBaseURL:          viper.GetString("rag.embedding_base_url"),
+		RAGEmbeddingAPIKey:           viper.GetString("rag.embedding_api_key"),
+		RAGEmbeddingModel:            viper.GetString("rag.embedding_model"),
+		RAGEmbeddingDimensions:       viper.GetInt("rag.embedding_dimensions"),
 	}
 	if err := validateRuntimeConfig(cfg); err != nil {
 		return err
@@ -249,10 +279,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLMAPIKey:                    cfg.LLMAPIKey,
 		LLMModel:                     cfg.LLMModel,
 		AgentMaxSteps:                cfg.AgentMaxSteps,
+		AgentContextWindowTokens:     cfg.AgentContextWindowTokens,
+		AgentReservedOutputTokens:    cfg.AgentReservedOutputTokens,
+		AgentContextHardUsageRatio:   cfg.AgentContextHardUsageRatio,
+		AgentToolEvidenceMaxTokens:   cfg.AgentToolEvidenceMaxTokens,
+		AgentContextShadowEnabled:    cfg.AgentContextShadowEnabled,
 		AgentInputTokenCostUSDPer1K:  cfg.AgentInputTokenCostUSDPer1K,
 		AgentOutputTokenCostUSDPer1K: cfg.AgentOutputTokenCostUSDPer1K,
 		ManagedConfigDir:             cfg.ManagedConfigDir,
 		ManagedConfigSyncMode:        cfg.ManagedConfigSyncMode,
+		RAGEnabled:                   cfg.RAGEnabled,
+		RAGEmbeddingBaseURL:          cfg.RAGEmbeddingBaseURL,
+		RAGEmbeddingAPIKey:           cfg.RAGEmbeddingAPIKey,
+		RAGEmbeddingModel:            cfg.RAGEmbeddingModel,
+		RAGEmbeddingDimensions:       cfg.RAGEmbeddingDimensions,
 	}, repo, authService)
 
 	grpcListener, err := net.Listen("tcp", cfg.WorkerGRPCAddr)
@@ -339,6 +379,18 @@ func validateRuntimeConfig(cfg config.ServerConfig) error {
 	}
 	if mode := strings.TrimSpace(cfg.ManagedConfigSyncMode); mode != "" && mode != "missing" && mode != "enforce" {
 		return fmt.Errorf("managed config sync mode must be missing or enforce, got %q", mode)
+	}
+	if cfg.AgentContextWindowTokens < 0 || cfg.AgentReservedOutputTokens < 0 {
+		return errors.New("agent context token limits cannot be negative")
+	}
+	if cfg.AgentToolEvidenceMaxTokens < 0 {
+		return errors.New("agent tool evidence max tokens cannot be negative")
+	}
+	if cfg.AgentContextWindowTokens > 0 && cfg.AgentReservedOutputTokens >= cfg.AgentContextWindowTokens {
+		return errors.New("agent reserved output tokens must be less than the context window")
+	}
+	if cfg.AgentContextHardUsageRatio <= 0 || cfg.AgentContextHardUsageRatio > 1 {
+		return errors.New("agent context hard usage ratio must be in (0, 1]")
 	}
 	return nil
 }

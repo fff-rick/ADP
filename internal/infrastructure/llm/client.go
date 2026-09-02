@@ -53,6 +53,60 @@ type Client interface {
 	Complete(context.Context, CompletionRequest) (Completion, error)
 }
 
+// EmbeddingClient is deliberately separate from Client: chat access does not
+// imply permission to export reviewed incident knowledge to an embedding API.
+type EmbeddingClient interface {
+	Embed(context.Context, string) ([]float32, error)
+}
+
+type HTTPEmbeddingClient struct {
+	baseURL, apiKey, model string
+	dimensions             int
+	http                   *http.Client
+}
+
+func NewHTTPEmbeddingClient(baseURL, apiKey, model string, dimensions int) *HTTPEmbeddingClient {
+	return &HTTPEmbeddingClient{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, model: model, dimensions: dimensions, http: &http.Client{Timeout: 30 * time.Second}}
+}
+
+func (c *HTTPEmbeddingClient) Embed(ctx context.Context, input string) ([]float32, error) {
+	if strings.TrimSpace(input) == "" {
+		return nil, errors.New("embedding input is required")
+	}
+	body, err := json.Marshal(map[string]any{"model": c.model, "input": input, "dimensions": c.dimensions})
+	if err != nil {
+		return nil, fmt.Errorf("marshal embedding: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/embeddings", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create embedding request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("embedding API returned %s", resp.Status)
+	}
+	var payload struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode embedding: %w", err)
+	}
+	if len(payload.Data) != 1 || len(payload.Data[0].Embedding) != c.dimensions {
+		return nil, fmt.Errorf("embedding returned %d dimensions, want %d", len(payload.Data[0].Embedding), c.dimensions)
+	}
+	return payload.Data[0].Embedding, nil
+}
+
 // StreamingClient is implemented by providers that can deliver assistant text
 // incrementally. Tool calls are still assembled before the runtime executes
 // them, so the authorization boundary remains unchanged.

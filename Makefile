@@ -1,6 +1,7 @@
 COMPOSE_FILE := deploy/docker-compose/compose.yml
 ENV_FILE := deploy/docker-compose/.env
 COMPOSE := docker compose --env-file $(ENV_FILE) -f $(COMPOSE_FILE)
+APP_SERVICES := server worker
 
 .DEFAULT_GOAL := help
 .PHONY: help init build up down restart logs ps config clean
@@ -17,17 +18,17 @@ build: ## Build the server and Worker images.
 	@$(MAKE) ensure-env
 	$(COMPOSE) build
 
-up: ## Start PostgreSQL, ADP server, and Worker in the background.
+up: ## Start the stack and recreate ADP containers from the current .env.
 	@$(MAKE) ensure-env
-	$(COMPOSE) up --build -d
+	$(COMPOSE) up --build -d --force-recreate $(APP_SERVICES)
 
 down: ## Stop the stack without deleting the PostgreSQL volume.
 	@$(MAKE) ensure-env
 	$(COMPOSE) down
 
-restart: ## Restart all services.
+restart: ## Recreate ADP containers from the current .env.
 	@$(MAKE) ensure-env
-	$(COMPOSE) restart
+	$(COMPOSE) up --build -d --force-recreate $(APP_SERVICES)
 
 logs: ## Follow logs for all services (SERVICE=server limits output to one service).
 	@$(MAKE) ensure-env

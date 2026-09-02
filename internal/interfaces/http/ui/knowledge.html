@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADP 知识库</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-page="knowledge">
+  <div class="ambient-glow"></div>
+  <div class="shell" style="position:relative;z-index:1;">
+    <header class="topbar">
+      <div class="topbar-brand">知识库<em>Reviewed Incident Cases</em></div>
+      <div class="topbar-right"><span class="server-clock" id="clock">--:--:--</span><a href="/login" class="btn btn-xs btn-primary" id="login-nav-btn" style="display:none;">登录</a><span class="session-badge" id="session-state">未登录</span><button id="logout-button" class="btn btn-xs btn-ghost" style="display:none;">退出</button><button class="theme-toggle" id="theme-toggle" type="button">◐</button></div>
+    </header>
+    <nav class="nav" style="margin-bottom:28px;"><a class="nav-link" href="/">首页</a><a class="nav-link" href="/users">用户</a><a class="nav-link" href="/workers">Workers</a><a class="nav-link" href="/jobs">Jobs</a><a class="nav-link" href="/tasks">Agent</a><a class="nav-link is-active" href="/knowledge">知识库</a><a class="nav-link" href="/configs">配置</a></nav>
+    <main>
+      <div id="knowledge-import-panel" class="panel-shell scroll-reveal" style="margin-bottom:20px;display:none;"><div class="panel-core">
+        <div class="panel-heading"><span class="panel-index">导入</span><span class="panel-title">导入 Markdown 案例</span><span class="panel-subtitle">仅管理员可操作；导入后需审核，审核通过才会进入 RAG。</span></div>
+        <form id="knowledge-import-form" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <input id="knowledge-import-file" class="field-input" type="file" accept=".md,text/markdown,text/plain" style="flex:1;min-width:220px;">
+          <button class="btn btn-primary" type="submit">上传并待审核</button>
+        </form>
+        <p id="knowledge-import-note" style="font-size:.75rem;color:var(--text-secondary);margin:10px 0 0;">支持最大 1 MiB 的 .md 文件；可使用 YAML front matter 填写 title、trigger_type、fault_type、environment_tags。</p>
+      </div></div>
+      <div class="panel-shell scroll-reveal" style="margin-bottom:20px;"><div class="panel-core">
+        <div class="panel-heading"><span class="panel-index">检索</span><span class="panel-title">已审核历史案例</span><span class="panel-subtitle">向量状态：ready 可由 RAG 召回；queued 生成中；failed 失败；not_indexed 未入队</span></div>
+        <form id="knowledge-search-form" style="display:flex;gap:10px;"><input id="knowledge-search" class="field-input" placeholder="按症状、根因或关键词搜索"><button class="btn btn-primary" type="submit">搜索</button></form>
+      </div></div>
+      <div class="panel-shell scroll-reveal"><div class="panel-core"><div id="knowledge-list"></div></div></div>
+    </main>
+  </div>
+  <div id="toast" class="toast" hidden></div><script src="/static/app.js" defer></script>
+</body>
+</html>

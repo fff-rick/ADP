@@ -28,6 +28,36 @@ func TestLoadServiceCatalogAndResolveByType(t *testing.T) {
 	}
 }
 
+func TestServiceCatalogResolveAutoRequiresOneProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "services.cnf")
+	contents := "[redis_one]\ntype=redis\nhost=redis-1.internal\n\n[mysql_one]\ntype=mysql\nhost=mysql.internal\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := LoadServiceCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := catalog.ResolveAuto("redis")
+	if err != nil || profile.Name != "redis_one" {
+		t.Fatalf("ResolveAuto(redis) = %#v, %v", profile, err)
+	}
+	if _, err := catalog.ResolveAuto("nginx"); err == nil {
+		t.Fatal("expected no-profile auto selection to fail")
+	}
+	contents += "\n[redis_two]\ntype=redis\nhost=redis-2.internal\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err = LoadServiceCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.ResolveAuto("redis"); err == nil {
+		t.Fatal("expected ambiguous auto selection to fail")
+	}
+}
+
 func TestLoadServiceCatalogRejectsInsecurePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "services.cnf")
 	if err := os.WriteFile(path, []byte("[redis_prod]\ntype=redis\nhost=localhost\n"), 0o644); err != nil {

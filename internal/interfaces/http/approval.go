@@ -72,7 +72,7 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 		// retry or second model submission is needed after a restart.
 		if *req.Approved && job.SourceID != "" {
 			go func(runID string) {
-				if _, _, resumeErr := s.executePersistentRun(context.Background(), runID, nil); resumeErr != nil {
+				if _, _, resumeErr := s.executePersistentRunWithEvents(context.Background(), runID); resumeErr != nil {
 					s.recordAudit("system", "agent", "agent.run.resume_failed", "agent_run", runID, map[string]any{"error": resumeErr.Error()})
 				}
 			}(job.SourceID)
@@ -83,15 +83,6 @@ func (s *Server) handleApproveJob(w http.ResponseWriter, r *http.Request) {
 				run.Error = "approval rejected"
 				_ = s.repo.UpdateAgentRun(run)
 				_, _ = s.repo.AddAgentEvent(model.AgentEvent{RunID: run.ID, Type: "approval_rejected", Data: map[string]any{"job_id": job.ID}})
-			}
-		}
-
-		// Auto-dispatch if the Agent already assigned a worker.
-		if *req.Approved && job.AssignedWorkerID != "" {
-			dispatched, derr := s.dispatchJobToWorker(job.ID, job.AssignedWorkerID)
-			if derr == nil {
-				s.workerHub.PushJob(job.AssignedWorkerID, dispatched)
-				job = dispatched
 			}
 		}
 

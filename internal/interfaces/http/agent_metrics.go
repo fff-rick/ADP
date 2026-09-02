@@ -11,12 +11,35 @@ import (
 // agentMetrics is intentionally local and dependency-free. Prometheus scrapes
 // aggregate values; durable run/job records remain the source of truth.
 type agentMetrics struct {
-	mu                                                                   sync.Mutex
-	runs, successfulRuns, toolCalls, toolErrors, policyRejections, steps int64
-	approvalWait, modelLatency, toolLatency                              time.Duration
-	approvals, modelCalls, toolLatencyCalls                              int64
-	promptTokens, completionTokens, totalTokens                          int64
-	inputTokenCostPer1K, outputTokenCostPer1K, tokenCostUSD              float64
+	mu                                                                               sync.Mutex
+	runs, successfulRuns, toolCalls, toolErrors, policyRejections, steps             int64
+	approvalWait, modelLatency, toolLatency                                          time.Duration
+	approvals, modelCalls, toolLatencyCalls                                          int64
+	promptTokens, completionTokens, totalTokens                                      int64
+	contextCalls, contextEstimatedTokens, contextOverBudget, contextSnapshotFailures int64
+	contextShadowSamples, contextShadowBaselineTokens, contextShadowCompactedTokens  int64
+	inputTokenCostPer1K, outputTokenCostPer1K, tokenCostUSD                          float64
+}
+
+func (m *agentMetrics) contextShadow(baseline, compacted int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.contextShadowSamples++
+	m.contextShadowBaselineTokens += int64(baseline)
+	m.contextShadowCompactedTokens += int64(compacted)
+}
+
+func (m *agentMetrics) context(estimate, budget int, snapshotErr error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.contextCalls++
+	m.contextEstimatedTokens += int64(estimate)
+	if budget > 0 && estimate > budget {
+		m.contextOverBudget++
+	}
+	if snapshotErr != nil {
+		m.contextSnapshotFailures++
+	}
 }
 
 func (m *agentMetrics) model(latency time.Duration, usage llm.Usage) {
@@ -62,13 +85,15 @@ type agentMetricsSnapshot struct {
 	runs, successfulRuns, toolCalls, toolErrors, policyRejections, steps                 int64
 	approvalWait, modelLatency, toolLatency                                              time.Duration
 	approvals, modelCalls, toolLatencyCalls, promptTokens, completionTokens, totalTokens int64
+	contextCalls, contextEstimatedTokens, contextOverBudget, contextSnapshotFailures     int64
+	contextShadowSamples, contextShadowBaselineTokens, contextShadowCompactedTokens      int64
 	tokenCostUSD                                                                         float64
 }
 
 func (m *agentMetrics) snapshot() agentMetricsSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return agentMetricsSnapshot{m.runs, m.successfulRuns, m.toolCalls, m.toolErrors, m.policyRejections, m.steps, m.approvalWait, m.modelLatency, m.toolLatency, m.approvals, m.modelCalls, m.toolLatencyCalls, m.promptTokens, m.completionTokens, m.totalTokens, m.tokenCostUSD}
+	return agentMetricsSnapshot{m.runs, m.successfulRuns, m.toolCalls, m.toolErrors, m.policyRejections, m.steps, m.approvalWait, m.modelLatency, m.toolLatency, m.approvals, m.modelCalls, m.toolLatencyCalls, m.promptTokens, m.completionTokens, m.totalTokens, m.contextCalls, m.contextEstimatedTokens, m.contextOverBudget, m.contextSnapshotFailures, m.contextShadowSamples, m.contextShadowBaselineTokens, m.contextShadowCompactedTokens, m.tokenCostUSD}
 }
 
 func (m *agentMetrics) dashboard() map[string]float64 {

@@ -399,11 +399,86 @@ func (s *Store) UpsertIncidentCase(plan model.DiagnosisPlan, report model.Analys
 		incidentCase.ResolutionSteps = cloneStrings(report.Suggestions)
 	}
 	incidentCase.SourcePlanID = plan.ID
+	if incidentCase.Status == "" {
+		incidentCase.Status = model.IncidentCaseStatusApproved
+	}
 	incidentCase.UpdatedAt = now
 
 	s.incidentCases[incidentCase.ID] = incidentCase
 	s.incidentByPlan[plan.ID] = incidentCase.ID
 	return incidentCase
+}
+
+func (s *Store) GetIncidentCase(id string) (model.IncidentCase, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	value, ok := s.incidentCases[id]
+	return value, ok
+}
+
+func (s *Store) SetIncidentCaseMetadata(id string, status model.IncidentCaseStatus, sourceRunID string) (model.IncidentCase, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.incidentCases[id]
+	if !ok {
+		return model.IncidentCase{}, false
+	}
+	if status != "" {
+		value.Status = status
+	}
+	value.SourceRunID = sourceRunID
+	value.UpdatedAt = time.Now()
+	s.incidentCases[id] = value
+	return value, true
+}
+
+func (s *Store) ReviewIncidentCase(id string, status model.IncidentCaseStatus, reviewedBy, note string, updates model.IncidentCase) (model.IncidentCase, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.incidentCases[id]
+	if !ok {
+		return model.IncidentCase{}, false
+	}
+	if updates.Title != "" {
+		value.Title = updates.Title
+	}
+	if updates.TriggerType != "" {
+		value.TriggerType = updates.TriggerType
+	}
+	if updates.FaultType != "" {
+		value.FaultType = updates.FaultType
+	}
+	if updates.Summary != "" {
+		value.Summary = updates.Summary
+	}
+	if updates.AlertSymptoms != "" {
+		value.AlertSymptoms = updates.AlertSymptoms
+	}
+	if updates.EvidenceSummary != "" {
+		value.EvidenceSummary = updates.EvidenceSummary
+	}
+	if updates.RootCause != "" {
+		value.RootCause = updates.RootCause
+	}
+	if updates.ResolutionResult != "" {
+		value.ResolutionResult = updates.ResolutionResult
+	}
+	if updates.PossibleCauses != nil {
+		value.PossibleCauses = cloneStrings(updates.PossibleCauses)
+	}
+	if updates.Suggestions != nil {
+		value.Suggestions = cloneStrings(updates.Suggestions)
+	}
+	if updates.EnvironmentTags != nil {
+		value.EnvironmentTags = cloneStrings(updates.EnvironmentTags)
+	}
+	if updates.ResolutionSteps != nil {
+		value.ResolutionSteps = cloneStrings(updates.ResolutionSteps)
+	}
+	now := time.Now()
+	value.Status, value.ReviewedBy, value.ReviewNote, value.ReviewedAt, value.UpdatedAt = status, reviewedBy, note, &now, now
+	s.incidentCases[id] = value
+	return value, true
 }
 
 func (s *Store) ListIncidentCases(filter model.IncidentCaseFilter) []model.IncidentCase {
@@ -412,6 +487,9 @@ func (s *Store) ListIncidentCases(filter model.IncidentCaseFilter) []model.Incid
 
 	cases := make([]model.IncidentCase, 0, len(s.incidentCases))
 	for _, incidentCase := range s.incidentCases {
+		if filter.Status != "" && incidentCase.Status != filter.Status {
+			continue
+		}
 		if !matchIncidentCase(incidentCase, filter) {
 			continue
 		}

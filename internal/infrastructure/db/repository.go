@@ -61,8 +61,18 @@ type Repository interface {
 	// ── Incident Cases ──
 
 	UpsertIncidentCase(planID string, c model.IncidentCase) (model.IncidentCase, error)
+	GetIncidentCase(id string) (model.IncidentCase, error)
+	ReviewIncidentCase(id string, status model.IncidentCaseStatus, reviewedBy, note string, updates model.IncidentCase) (model.IncidentCase, error)
 	ListIncidentCases(filter model.IncidentCaseFilter) ([]model.IncidentCase, error)
 	FindSimilarIncidentCases(description, triggerType, faultType string, limit int) ([]model.IncidentCase, error)
+	QueueIncidentCaseEmbedding(caseID, contentHash, embeddingModel string, dimensions int) error
+	ListQueuedIncidentCaseEmbeddingIDs(limit int) ([]string, error)
+	CompleteIncidentCaseEmbedding(caseID, embeddingModel, vector string) error
+	FailIncidentCaseEmbedding(caseID, message string) error
+	RetryIncidentCaseEmbedding(caseID string) error
+	ListFailedIncidentCaseEmbeddings(limit int) ([]model.IncidentCaseEmbeddingStatus, error)
+	SearchIncidentCaseEmbeddingIDs(vector, embeddingModel string, filter model.IncidentCaseFilter, limit int) ([]string, error)
+	RAGMetrics() (model.RAGMetrics, error)
 
 	// ── Job YAMLs ──
 
@@ -101,6 +111,8 @@ type Repository interface {
 	ListAgentEvents(runID string, afterID int64) ([]model.AgentEvent, error)
 	CreateAgentToolCall(call model.AgentToolCall) error
 	CompleteAgentToolCall(call model.AgentToolCall) error
+	CreateAgentContextSnapshot(snapshot model.AgentContextSnapshot) (model.AgentContextSnapshot, error)
+	ListAgentContextSnapshots(runID string) ([]model.AgentContextSnapshot, error)
 
 	// ── Metrics ──
 

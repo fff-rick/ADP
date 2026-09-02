@@ -14,3 +14,15 @@ func TestSanitizeMapRedactsAndBoundsValues(t *testing.T) {
 		t.Fatalf("unsafe output: %#v", safe["output"])
 	}
 }
+
+func TestSanitizeMapHandlesStringCollections(t *testing.T) {
+	safe := SanitizeMap(map[string]any{
+		"headers": map[string]string{"authorization": "Bearer secret", "note": "token: hidden"},
+		"lines":   []string{"password=hidden", "safe"},
+	})
+	headers := safe["headers"].(map[string]string)
+	lines := safe["lines"].([]string)
+	if headers["authorization"] != "[REDACTED]" || strings.Contains(headers["note"], "hidden") || strings.Contains(lines[0], "hidden") {
+		t.Fatalf("secret leaked from typed collection: %#v", safe)
+	}
+}

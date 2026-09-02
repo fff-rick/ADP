@@ -11,8 +11,10 @@ import (
 
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	var snapshot model.MetricsSnapshot
+	var rag model.RAGMetrics
 	if s.repo != nil {
 		snapshot, _ = s.repo.MetricsSnapshot()
+		rag, _ = s.repo.RAGMetrics()
 	}
 	// Recalculate online workers in real-time.
 	if s.repo != nil {
@@ -46,6 +48,19 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	out.WriteString("# HELP adp_incident_cases_total Total number of stored incident cases.\n")
 	out.WriteString("# TYPE adp_incident_cases_total gauge\n")
 	writeMetricf(&out, "adp_incident_cases_total %d\n", snapshot.IncidentCasesTotal)
+	out.WriteString("# HELP adp_rag_embeddings Number of incident-case embeddings by state.\n# TYPE adp_rag_embeddings gauge\n")
+	writeMetricf(&out, "adp_rag_embeddings{status=\"queued\"} %d\n", rag.Queued)
+	writeMetricf(&out, "adp_rag_embeddings{status=\"ready\"} %d\n", rag.Ready)
+	writeMetricf(&out, "adp_rag_embeddings{status=\"failed\"} %d\n", rag.Failed)
+	if s.ragMetrics != nil {
+		calls, failures, latency := s.ragMetrics.snapshot()
+		out.WriteString("# HELP adp_rag_embedding_generation_total Embedding generation attempts in this server process.\n# TYPE adp_rag_embedding_generation_total counter\n")
+		writeMetricf(&out, "adp_rag_embedding_generation_total %d\n", calls)
+		out.WriteString("# HELP adp_rag_embedding_generation_failures_total Failed embedding generation attempts in this server process.\n# TYPE adp_rag_embedding_generation_failures_total counter\n")
+		writeMetricf(&out, "adp_rag_embedding_generation_failures_total %d\n", failures)
+		out.WriteString("# HELP adp_rag_embedding_generation_latency_seconds_avg Average embedding generation latency in this server process.\n# TYPE adp_rag_embedding_generation_latency_seconds_avg gauge\n")
+		writeMetricf(&out, "adp_rag_embedding_generation_latency_seconds_avg %.6f\n", latency)
+	}
 	out.WriteString("# HELP adp_job_success_rate Success rate of completed jobs.\n")
 	out.WriteString("# TYPE adp_job_success_rate gauge\n")
 	writeMetricf(&out, "adp_job_success_rate %.6f\n", snapshot.JobSuccessRate)
@@ -99,6 +114,18 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		writeMetricf(&out, "adp_agent_completion_tokens_total %d\n", m.completionTokens)
 		out.WriteString("# HELP adp_agent_token_cost_usd_total Configured-price estimate of model token cost in USD.\n# TYPE adp_agent_token_cost_usd_total counter\n")
 		writeMetricf(&out, "adp_agent_token_cost_usd_total %.8f\n", m.tokenCostUSD)
+		out.WriteString("# HELP adp_agent_context_tokens_estimated_total Server-side conservative prompt-token estimates.\n# TYPE adp_agent_context_tokens_estimated_total counter\n")
+		writeMetricf(&out, "adp_agent_context_tokens_estimated_total %d\n", m.contextEstimatedTokens)
+		out.WriteString("# HELP adp_agent_context_over_budget_total Context projections rejected before calling the model.\n# TYPE adp_agent_context_over_budget_total counter\n")
+		writeMetricf(&out, "adp_agent_context_over_budget_total %d\n", m.contextOverBudget)
+		out.WriteString("# HELP adp_agent_context_snapshot_failures_total Failed writes of model-context audit snapshots.\n# TYPE adp_agent_context_snapshot_failures_total counter\n")
+		writeMetricf(&out, "adp_agent_context_snapshot_failures_total %d\n", m.contextSnapshotFailures)
+		out.WriteString("# HELP adp_agent_context_shadow_samples_total Context compression comparisons recorded without changing live requests.\n# TYPE adp_agent_context_shadow_samples_total counter\n")
+		writeMetricf(&out, "adp_agent_context_shadow_samples_total %d\n", m.contextShadowSamples)
+		out.WriteString("# HELP adp_agent_context_shadow_baseline_tokens_total Token estimates for uncompressed conversation context.\n# TYPE adp_agent_context_shadow_baseline_tokens_total counter\n")
+		writeMetricf(&out, "adp_agent_context_shadow_baseline_tokens_total %d\n", m.contextShadowBaselineTokens)
+		out.WriteString("# HELP adp_agent_context_shadow_compacted_tokens_total Token estimates for compacted conversation context.\n# TYPE adp_agent_context_shadow_compacted_tokens_total counter\n")
+		writeMetricf(&out, "adp_agent_context_shadow_compacted_tokens_total %d\n", m.contextShadowCompactedTokens)
 	}
 	if _, err := w.Write([]byte(out.String())); err != nil {
 		return

@@ -17,6 +17,7 @@ coverage/
 .env
 .env.*
 *.env
+!deploy/docker-compose/.env.example
 configs/worker/services.cnf
 configs/server/adp.yaml
 /secrets/prod/

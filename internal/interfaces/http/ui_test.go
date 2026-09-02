@@ -21,7 +21,7 @@ func TestDashboardUIRoutesAndSummary(t *testing.T) {
 	app := httptest.NewServer(server.httpServer.Handler)
 	defer app.Close()
 
-	for _, route := range []string{"/", "/login", "/users", "/workers", "/jobs", "/tasks", "/configs"} {
+	for _, route := range []string{"/", "/login", "/users", "/workers", "/jobs", "/tasks", "/configs", "/knowledge"} {
 		resp, err := app.Client().Get(app.URL + route)
 		if err != nil {
 			t.Fatalf("GET %s error = %v", route, err)
@@ -45,6 +45,9 @@ func TestDashboardUIRoutesAndSummary(t *testing.T) {
 		}
 		if route == "/tasks" && !strings.Contains(string(body), "历史案例仅供参考") {
 			t.Fatalf("tasks page missing historical-case provenance notice")
+		}
+		if route == "/knowledge" && (!strings.Contains(string(body), "knowledge-list") || !strings.Contains(string(body), "knowledge-import-form")) {
+			t.Fatalf("knowledge page missing case list or Markdown import form")
 		}
 	}
 

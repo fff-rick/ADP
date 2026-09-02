@@ -40,8 +40,20 @@ func sanitizeValue(key string, value any) any {
 	switch v := value.(type) {
 	case string:
 		return SanitizeText(v)
+	case map[string]string:
+		out := make(map[string]string, len(v))
+		for nestedKey, nestedValue := range v {
+			out[nestedKey] = fmt.Sprint(sanitizeValue(nestedKey, nestedValue))
+		}
+		return out
 	case map[string]any:
 		return SanitizeMap(v)
+	case []string:
+		out := make([]string, len(v))
+		for i := range v {
+			out[i] = SanitizeText(v[i])
+		}
+		return out
 	case []map[string]any:
 		out := make([]map[string]any, len(v))
 		for i := range v {
@@ -70,9 +82,6 @@ func ValidateServiceProfile(templateCode string, params map[string]string) error
 	}
 	if !serviceProfilePattern.MatchString(name) {
 		return fmt.Errorf("template %q has invalid ServiceProfile", templateCode)
-	}
-	if strings.TrimSpace(params["ServiceType"]) == "" {
-		return fmt.Errorf("template %q requires ServiceType when ServiceProfile is set", templateCode)
 	}
 	return nil
 }

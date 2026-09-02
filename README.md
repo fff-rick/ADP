@@ -172,7 +172,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/approvals/jobs/<job-id> \
 | Agent 事件回放 | `GET /api/v1/agent/runs/{id}/events` |
 | 审批 | `GET /api/v1/approvals/jobs`、`POST /api/v1/approvals/jobs/{id}` |
 | 审计 | `GET /api/v1/audit/logs` |
-| 历史案例 | `GET /api/v1/cases`、`GET /api/v1/cases/suggestions` |
+| 历史案例 | `GET /api/v1/cases`、`GET /api/v1/cases/suggestions`、`POST /api/v1/cases/import`（管理员） |
 | 指标 | `GET /metrics` |
 
 ## 测试与开发检查
@@ -194,7 +194,7 @@ protoc --go_out=. --go-grpc_out=. \
 
 ## 当前边界与后续方向
 
-- 当前案例检索为结构化过滤与关键词匹配，不是向量 RAG。
+- 管理员可通过 `multipart/form-data` 的 `file` 字段上传最大 1 MiB 的 `.md` 案例；可选 YAML front matter 支持 `title`、`trigger_type`、`fault_type` 和 `environment_tags`。导入后为 `pending_review`，审核通过后才进入检索与向量化队列。
 - Agent 指标部分在进程内聚合，重启后会重置；任务和 Run 记录才是持久化事实来源。
 - 当前不存在可写入文档的性能压测数据；正式上线前应完成端到端验收、断线恢复与并发压测。
 - 生产化优先补齐 mTLS、按用户/目标范围的 RBAC、Transactional Outbox、Worker ACK 与执行去重，再评估消息队列或向量检索。

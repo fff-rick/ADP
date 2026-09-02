@@ -96,4 +96,7 @@ func TestIncidentCaseAndMetricsEndpoints(t *testing.T) {
 	if !strings.Contains(text, "adp_incident_cases_total") {
 		t.Fatalf("expected adp_incident_cases_total in metrics output: %s", text)
 	}
+	if !strings.Contains(text, "adp_rag_embedding_generation_latency_seconds_avg") {
+		t.Fatalf("expected RAG generation latency metric in output: %s", text)
+	}
 }

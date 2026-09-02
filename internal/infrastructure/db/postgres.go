@@ -761,11 +761,11 @@ func (r *PostgresRepository) UpsertIncidentCase(planID string, c model.IncidentC
 			 summary = $4, possible_causes = $5, suggestions = $6, confidence = $7,
 			 alert_symptoms = $8, environment_tags = $9, evidence_summary = $10,
 			 root_cause = $11, resolution_steps = $12, resolution_result = $13,
-			 updated_at = $14 WHERE id = $15`,
+			 status = $14, source_run_id = $15, updated_at = $16 WHERE id = $17`,
 			c.Title, c.TriggerType, c.FaultType, c.Summary,
 			pq.Array(c.PossibleCauses), pq.Array(c.Suggestions), c.Confidence,
 			c.AlertSymptoms, pq.Array(c.EnvironmentTags), c.EvidenceSummary,
-			c.RootCause, pq.Array(c.ResolutionSteps), c.ResolutionResult, now, c.ID,
+			c.RootCause, pq.Array(c.ResolutionSteps), c.ResolutionResult, caseStatus(c.Status), c.SourceRunID, now, c.ID,
 		)
 		if err != nil {
 			return model.IncidentCase{}, fmt.Errorf("update incident case: %w", err)
@@ -778,6 +778,9 @@ func (r *PostgresRepository) UpsertIncidentCase(planID string, c model.IncidentC
 	c.CreatedAt = now
 	c.UpdatedAt = now
 	c.SourcePlanID = planID
+	if c.Status == "" {
+		c.Status = model.IncidentCaseStatusApproved
+	}
 	if c.PossibleCauses == nil {
 		c.PossibleCauses = []string{}
 	}
@@ -795,12 +798,12 @@ func (r *PostgresRepository) UpsertIncidentCase(planID string, c model.IncidentC
 		`INSERT INTO incident_cases (id, title, trigger_type, fault_type, summary,
 		 possible_causes, suggestions, confidence, source_plan_id, alert_symptoms,
 		 environment_tags, evidence_summary, root_cause, resolution_steps,
-		 resolution_result, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		 resolution_result, status, source_run_id, reviewed_by, reviewed_at, review_note, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
 		c.ID, c.Title, c.TriggerType, c.FaultType, c.Summary,
 		pq.Array(c.PossibleCauses), pq.Array(c.Suggestions), c.Confidence,
 		planID, c.AlertSymptoms, pq.Array(c.EnvironmentTags), c.EvidenceSummary,
-		c.RootCause, pq.Array(c.ResolutionSteps), c.ResolutionResult, c.CreatedAt, c.UpdatedAt,
+		c.RootCause, pq.Array(c.ResolutionSteps), c.ResolutionResult, c.Status, c.SourceRunID, c.ReviewedBy, c.ReviewedAt, c.ReviewNote, c.CreatedAt, c.UpdatedAt,
 	)
 	if err != nil {
 		return model.IncidentCase{}, fmt.Errorf("insert incident case: %w", err)
@@ -808,41 +811,121 @@ func (r *PostgresRepository) UpsertIncidentCase(planID string, c model.IncidentC
 	return c, nil
 }
 
+func caseStatus(status model.IncidentCaseStatus) model.IncidentCaseStatus {
+	if status == "" {
+		return model.IncidentCaseStatusApproved
+	}
+	return status
+}
+
+func (r *PostgresRepository) GetIncidentCase(id string) (model.IncidentCase, error) {
+	query := `SELECT id, title, trigger_type, fault_type, summary, possible_causes, suggestions, confidence, source_plan_id, alert_symptoms, environment_tags, evidence_summary, root_cause, resolution_steps, resolution_result, status, source_run_id, reviewed_by, reviewed_at, review_note, created_at, updated_at FROM incident_cases WHERE id = $1`
+	var c model.IncidentCase
+	err := r.db.QueryRow(query, id).Scan(&c.ID, &c.Title, &c.TriggerType, &c.FaultType, &c.Summary, pq.Array(&c.PossibleCauses), pq.Array(&c.Suggestions), &c.Confidence, &c.SourcePlanID, &c.AlertSymptoms, pq.Array(&c.EnvironmentTags), &c.EvidenceSummary, &c.RootCause, pq.Array(&c.ResolutionSteps), &c.ResolutionResult, &c.Status, &c.SourceRunID, &c.ReviewedBy, &c.ReviewedAt, &c.ReviewNote, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		return model.IncidentCase{}, fmt.Errorf("get incident case: %w", err)
+	}
+	return c, nil
+}
+
+func (r *PostgresRepository) ReviewIncidentCase(id string, status model.IncidentCaseStatus, reviewedBy, note string, updates model.IncidentCase) (model.IncidentCase, error) {
+	if status != model.IncidentCaseStatusApproved && status != model.IncidentCaseStatusRejected {
+		return model.IncidentCase{}, fmt.Errorf("invalid incident case review status")
+	}
+	c, err := r.GetIncidentCase(id)
+	if err != nil {
+		return model.IncidentCase{}, err
+	}
+	mergeIncidentCase(&c, updates)
+	now := time.Now()
+	c.Status, c.ReviewedBy, c.ReviewedAt, c.ReviewNote, c.UpdatedAt = status, reviewedBy, &now, note, now
+	_, err = r.db.Exec(`UPDATE incident_cases SET title=$1, trigger_type=$2, fault_type=$3, summary=$4, possible_causes=$5, suggestions=$6, confidence=$7, alert_symptoms=$8, environment_tags=$9, evidence_summary=$10, root_cause=$11, resolution_steps=$12, resolution_result=$13, status=$14, reviewed_by=$15, reviewed_at=$16, review_note=$17, updated_at=$18 WHERE id=$19`, c.Title, c.TriggerType, c.FaultType, c.Summary, pq.Array(c.PossibleCauses), pq.Array(c.Suggestions), c.Confidence, c.AlertSymptoms, pq.Array(c.EnvironmentTags), c.EvidenceSummary, c.RootCause, pq.Array(c.ResolutionSteps), c.ResolutionResult, c.Status, c.ReviewedBy, c.ReviewedAt, c.ReviewNote, c.UpdatedAt, id)
+	if err != nil {
+		return model.IncidentCase{}, fmt.Errorf("review incident case: %w", err)
+	}
+	return c, nil
+}
+
+func mergeIncidentCase(dst *model.IncidentCase, src model.IncidentCase) {
+	if src.Title != "" {
+		dst.Title = src.Title
+	}
+	if src.TriggerType != "" {
+		dst.TriggerType = src.TriggerType
+	}
+	if src.FaultType != "" {
+		dst.FaultType = src.FaultType
+	}
+	if src.Summary != "" {
+		dst.Summary = src.Summary
+	}
+	if src.AlertSymptoms != "" {
+		dst.AlertSymptoms = src.AlertSymptoms
+	}
+	if src.EvidenceSummary != "" {
+		dst.EvidenceSummary = src.EvidenceSummary
+	}
+	if src.RootCause != "" {
+		dst.RootCause = src.RootCause
+	}
+	if src.ResolutionResult != "" {
+		dst.ResolutionResult = src.ResolutionResult
+	}
+	if src.PossibleCauses != nil {
+		dst.PossibleCauses = src.PossibleCauses
+	}
+	if src.Suggestions != nil {
+		dst.Suggestions = src.Suggestions
+	}
+	if src.EnvironmentTags != nil {
+		dst.EnvironmentTags = src.EnvironmentTags
+	}
+	if src.ResolutionSteps != nil {
+		dst.ResolutionSteps = src.ResolutionSteps
+	}
+}
+
 func (r *PostgresRepository) ListIncidentCases(filter model.IncidentCaseFilter) ([]model.IncidentCase, error) {
-	query := `SELECT id, title, trigger_type, fault_type, summary,
-		 possible_causes, suggestions, confidence, source_plan_id, alert_symptoms,
-		 environment_tags, evidence_summary, root_cause, resolution_steps,
-		 resolution_result, created_at, updated_at
-		 FROM incident_cases WHERE 1=1`
+	query := `SELECT c.id, c.title, c.trigger_type, c.fault_type, c.summary,
+		 c.possible_causes, c.suggestions, c.confidence, c.source_plan_id, c.alert_symptoms,
+		 c.environment_tags, c.evidence_summary, c.root_cause, c.resolution_steps,
+		 c.resolution_result, c.status, c.source_run_id, c.reviewed_by, c.reviewed_at, c.review_note, c.created_at, c.updated_at,
+		 COALESCE(e.status, 'not_indexed')
+		 FROM incident_cases c LEFT JOIN incident_case_embeddings e ON e.case_id=c.id WHERE 1=1`
 	var args []any
 	argN := 1
 
 	if filter.TriggerType != "" {
-		query += fmt.Sprintf(" AND trigger_type = $%d", argN)
+		query += fmt.Sprintf(" AND c.trigger_type = $%d", argN)
 		args = append(args, filter.TriggerType)
 		argN++
 	}
 	if filter.FaultType != "" {
-		query += fmt.Sprintf(" AND fault_type = $%d", argN)
+		query += fmt.Sprintf(" AND c.fault_type = $%d", argN)
 		args = append(args, filter.FaultType)
 		argN++
 	}
+	if filter.Status != "" {
+		query += fmt.Sprintf(" AND c.status = $%d", argN)
+		args = append(args, filter.Status)
+		argN++
+	}
 	if len(filter.EnvironmentTags) > 0 {
-		query += fmt.Sprintf(" AND environment_tags @> $%d", argN)
+		query += fmt.Sprintf(" AND c.environment_tags @> $%d", argN)
 		args = append(args, pq.Array(filter.EnvironmentTags))
 		argN++
 	}
 	if filter.Query != "" {
-		query += fmt.Sprintf(` AND concat_ws(' ', title, trigger_type, fault_type, summary,
-			alert_symptoms, evidence_summary, root_cause, resolution_result,
-			array_to_string(environment_tags, ' '), array_to_string(resolution_steps, ' '),
-			array_to_string(possible_causes, ' '), array_to_string(suggestions, ' ')) ILIKE $%d`, argN)
+		query += fmt.Sprintf(` AND concat_ws(' ', c.title, c.trigger_type, c.fault_type, c.summary,
+			c.alert_symptoms, c.evidence_summary, c.root_cause, c.resolution_result,
+			array_to_string(c.environment_tags, ' '), array_to_string(c.resolution_steps, ' '),
+			array_to_string(c.possible_causes, ' '), array_to_string(c.suggestions, ' ')) ILIKE $%d`, argN)
 		pattern := "%" + filter.Query + "%"
 		args = append(args, pattern)
 		argN++
 	}
 
-	query += " ORDER BY updated_at DESC"
+	query += " ORDER BY c.updated_at DESC"
 
 	if filter.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT $%d", argN)
@@ -862,7 +945,7 @@ func (r *PostgresRepository) ListIncidentCases(filter model.IncidentCaseFilter) 
 			pq.Array(&c.PossibleCauses), pq.Array(&c.Suggestions), &c.Confidence,
 			&c.SourcePlanID, &c.AlertSymptoms, pq.Array(&c.EnvironmentTags),
 			&c.EvidenceSummary, &c.RootCause, pq.Array(&c.ResolutionSteps),
-			&c.ResolutionResult, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.ResolutionResult, &c.Status, &c.SourceRunID, &c.ReviewedBy, &c.ReviewedAt, &c.ReviewNote, &c.CreatedAt, &c.UpdatedAt, &c.EmbeddingStatus); err != nil {
 			return nil, fmt.Errorf("scan incident case: %w", err)
 		}
 		cases = append(cases, c)
@@ -874,7 +957,126 @@ func (r *PostgresRepository) FindSimilarIncidentCases(description, triggerType, 
 	// P1 retrieval is deliberately deterministic keyword/structured matching.
 	// It avoids the previous full-table fetch and keeps the eventual pgvector
 	// addition an in-place enhancement rather than a second data store.
-	return r.ListIncidentCases(model.IncidentCaseFilter{Query: description, TriggerType: triggerType, FaultType: faultType, Limit: limit})
+	return r.ListIncidentCases(model.IncidentCaseFilter{Query: description, TriggerType: triggerType, FaultType: faultType, Limit: limit, Status: model.IncidentCaseStatusApproved})
+}
+
+func (r *PostgresRepository) QueueIncidentCaseEmbedding(caseID, contentHash, embeddingModel string, dimensions int) error {
+	_, err := r.db.Exec(`INSERT INTO incident_case_embeddings (case_id, content_hash, embedding_model, dimensions, status) VALUES ($1,$2,$3,$4,'queued') ON CONFLICT (case_id) DO UPDATE SET content_hash=EXCLUDED.content_hash, embedding_model=EXCLUDED.embedding_model, dimensions=EXCLUDED.dimensions, embedding=NULL, status='queued', attempts=0, next_attempt_at=NOW(), last_error='', updated_at=NOW() WHERE incident_case_embeddings.content_hash <> EXCLUDED.content_hash OR incident_case_embeddings.embedding_model <> EXCLUDED.embedding_model OR incident_case_embeddings.dimensions <> EXCLUDED.dimensions`, caseID, contentHash, embeddingModel, dimensions)
+	if err != nil {
+		return fmt.Errorf("queue incident embedding: %w", err)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) ListQueuedIncidentCaseEmbeddingIDs(limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := r.db.Query(`SELECT e.case_id FROM incident_case_embeddings e JOIN incident_cases c ON c.id=e.case_id WHERE e.status IN ('queued','failed') AND e.attempts < 5 AND e.next_attempt_at <= NOW() AND c.status='approved' ORDER BY e.next_attempt_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list queued embeddings: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (r *PostgresRepository) CompleteIncidentCaseEmbedding(caseID, embeddingModel, vector string) error {
+	_, err := r.db.Exec(`UPDATE incident_case_embeddings SET embedding=$1::vector, embedding_model=$2, status='ready', attempts=attempts+1, next_attempt_at=NOW(), last_error='', updated_at=NOW() WHERE case_id=$3`, vector, embeddingModel, caseID)
+	return err
+}
+
+func (r *PostgresRepository) FailIncidentCaseEmbedding(caseID, message string) error {
+	_, err := r.db.Exec(`UPDATE incident_case_embeddings SET status='failed', attempts=attempts+1, next_attempt_at=NOW() + (LEAST(attempts + 1, 6) * INTERVAL '30 seconds'), last_error=$1, updated_at=NOW() WHERE case_id=$2`, message, caseID)
+	return err
+}
+
+func (r *PostgresRepository) RetryIncidentCaseEmbedding(caseID string) error {
+	result, err := r.db.Exec(`UPDATE incident_case_embeddings SET status='queued', attempts=0, next_attempt_at=NOW(), last_error='', updated_at=NOW() WHERE case_id=$1`, caseID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return errNotFound("incident embedding", caseID)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) ListFailedIncidentCaseEmbeddings(limit int) ([]model.IncidentCaseEmbeddingStatus, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	rows, err := r.db.Query(`SELECT e.case_id, c.title, e.status, e.attempts, e.last_error, e.next_attempt_at, e.updated_at FROM incident_case_embeddings e JOIN incident_cases c ON c.id=e.case_id WHERE e.status='failed' AND c.status='approved' ORDER BY e.updated_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list failed incident embeddings: %w", err)
+	}
+	defer rows.Close()
+	var statuses []model.IncidentCaseEmbeddingStatus
+	for rows.Next() {
+		var status model.IncidentCaseEmbeddingStatus
+		if err := rows.Scan(&status.CaseID, &status.CaseTitle, &status.Status, &status.Attempts, &status.LastError, &status.NextAttemptAt, &status.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan failed incident embedding: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}
+
+func (r *PostgresRepository) SearchIncidentCaseEmbeddingIDs(vector, embeddingModel string, filter model.IncidentCaseFilter, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	query := `SELECT e.case_id FROM incident_case_embeddings e JOIN incident_cases c ON c.id=e.case_id WHERE e.status='ready' AND e.embedding_model=$1 AND c.status='approved'`
+	args := []any{embeddingModel}
+	n := 2
+	if filter.TriggerType != "" {
+		query += fmt.Sprintf(" AND c.trigger_type=$%d", n)
+		args = append(args, filter.TriggerType)
+		n++
+	}
+	if filter.FaultType != "" {
+		query += fmt.Sprintf(" AND c.fault_type=$%d", n)
+		args = append(args, filter.FaultType)
+		n++
+	}
+	if len(filter.EnvironmentTags) > 0 {
+		query += fmt.Sprintf(" AND c.environment_tags @> $%d", n)
+		args = append(args, pq.Array(filter.EnvironmentTags))
+		n++
+	}
+	query += fmt.Sprintf(" ORDER BY e.embedding <=> $%d::vector LIMIT $%d", n, n+1)
+	args = append(args, vector, limit)
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search incident embeddings: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (r *PostgresRepository) RAGMetrics() (model.RAGMetrics, error) {
+	var m model.RAGMetrics
+	err := r.db.QueryRow(`SELECT COUNT(*) FILTER (WHERE status='queued'), COUNT(*) FILTER (WHERE status='ready'), COUNT(*) FILTER (WHERE status='failed') FROM incident_case_embeddings`).Scan(&m.Queued, &m.Ready, &m.Failed)
+	return m, err
 }
 
 // ── Job YAMLs ──
@@ -1347,4 +1549,37 @@ func (r *PostgresRepository) CompleteAgentToolCall(call model.AgentToolCall) err
 	now := time.Now()
 	_, err := r.db.Exec(`UPDATE agent_tool_calls SET result=$1,error=$2,status=$3,completed_at=$4 WHERE id=$5`, call.Result, call.Error, call.Status, now, call.ID)
 	return err
+}
+
+func (r *PostgresRepository) CreateAgentContextSnapshot(snapshot model.AgentContextSnapshot) (model.AgentContextSnapshot, error) {
+	decisions, _ := json.Marshal(snapshot.Decisions)
+	if len(snapshot.Messages) == 0 {
+		snapshot.Messages = []byte("[]")
+	}
+	now := time.Now()
+	err := r.db.QueryRow(`INSERT INTO agent_context_snapshots (run_id,step,transcript_version,token_estimate,budget_tokens,decisions,messages,content_sha256,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, snapshot.RunID, snapshot.Step, snapshot.TranscriptVersion, snapshot.TokenEstimate, snapshot.BudgetTokens, decisions, snapshot.Messages, snapshot.ContentSHA256, now).Scan(&snapshot.ID)
+	if err != nil {
+		return model.AgentContextSnapshot{}, fmt.Errorf("create agent context snapshot: %w", err)
+	}
+	snapshot.CreatedAt = now
+	return snapshot, nil
+}
+
+func (r *PostgresRepository) ListAgentContextSnapshots(runID string) ([]model.AgentContextSnapshot, error) {
+	rows, err := r.db.Query(`SELECT id,run_id,step,transcript_version,token_estimate,budget_tokens,decisions,messages,content_sha256,created_at FROM agent_context_snapshots WHERE run_id=$1 ORDER BY id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent context snapshots: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []model.AgentContextSnapshot{}
+	for rows.Next() {
+		var snapshot model.AgentContextSnapshot
+		var decisions []byte
+		if err := rows.Scan(&snapshot.ID, &snapshot.RunID, &snapshot.Step, &snapshot.TranscriptVersion, &snapshot.TokenEstimate, &snapshot.BudgetTokens, &decisions, &snapshot.Messages, &snapshot.ContentSHA256, &snapshot.CreatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(decisions, &snapshot.Decisions)
+		out = append(out, snapshot)
+	}
+	return out, rows.Err()
 }

@@ -15,10 +15,20 @@ type ServerConfig struct {
 	LLMAPIKey                    string
 	LLMModel                     string
 	AgentMaxSteps                int
+	AgentContextWindowTokens     int
+	AgentReservedOutputTokens    int
+	AgentContextHardUsageRatio   float64
+	AgentToolEvidenceMaxTokens   int
+	AgentContextShadowEnabled    bool
 	AgentInputTokenCostUSDPer1K  float64
 	AgentOutputTokenCostUSDPer1K float64
 	ManagedConfigDir             string
 	ManagedConfigSyncMode        string
+	RAGEnabled                   bool
+	RAGEmbeddingBaseURL          string
+	RAGEmbeddingAPIKey           string
+	RAGEmbeddingModel            string
+	RAGEmbeddingDimensions       int
 }
 
 // WorkerConfig holds all configuration for the ADP worker.

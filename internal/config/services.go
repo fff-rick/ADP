@@ -132,8 +132,28 @@ func (c *ServiceCatalog) Resolve(name, serviceType string) (RuntimeServiceProfil
 	if !ok {
 		return RuntimeServiceProfile{}, fmt.Errorf("service profile %q not found", name)
 	}
-	if profile.Type != serviceType {
+	if serviceType != "" && profile.Type != serviceType {
 		return RuntimeServiceProfile{}, fmt.Errorf("service profile %q has type %q, expected %q", name, profile.Type, serviceType)
 	}
 	return profile, nil
+}
+
+// ResolveAuto returns the sole local profile of serviceType. It deliberately
+// refuses ambiguous selection: the control plane may request convenience, but
+// it must never silently choose between multiple production targets.
+func (c *ServiceCatalog) ResolveAuto(serviceType string) (RuntimeServiceProfile, error) {
+	serviceType = strings.ToLower(strings.TrimSpace(serviceType))
+	if serviceType == "" {
+		return RuntimeServiceProfile{}, fmt.Errorf("service type is required for automatic profile selection")
+	}
+	var matched []RuntimeServiceProfile
+	for _, profile := range c.profiles {
+		if profile.Type == serviceType {
+			matched = append(matched, profile)
+		}
+	}
+	if len(matched) != 1 {
+		return RuntimeServiceProfile{}, fmt.Errorf("automatic profile selection for type %q requires exactly one local profile, found %d", serviceType, len(matched))
+	}
+	return matched[0], nil
 }

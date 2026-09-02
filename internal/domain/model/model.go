@@ -126,6 +126,22 @@ type AgentToolCall struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
+// AgentContextSnapshot records the sanitized prompt projection actually sent to
+// the model before a run step. The canonical transcript remains the recovery
+// source; snapshots make budget decisions auditable without mutating it.
+type AgentContextSnapshot struct {
+	ID                int64          `json:"id"`
+	RunID             string         `json:"run_id"`
+	Step              int            `json:"step"`
+	TranscriptVersion int            `json:"transcript_version"`
+	TokenEstimate     int            `json:"token_estimate"`
+	BudgetTokens      int            `json:"budget_tokens"`
+	Decisions         map[string]any `json:"decisions,omitempty"`
+	Messages          []byte         `json:"-"`
+	ContentSHA256     string         `json:"content_sha256"`
+	CreatedAt         time.Time      `json:"created_at"`
+}
+
 // RiskLevel represents the risk classification of a task.
 type RiskLevel string
 
@@ -260,13 +276,30 @@ type IncidentCase struct {
 
 	// Structured historical knowledge. It must never be presented as a live
 	// observation of the host that is currently being diagnosed.
-	AlertSymptoms    string   `json:"alert_symptoms,omitempty"`
-	EnvironmentTags  []string `json:"environment_tags,omitempty"`
-	EvidenceSummary  string   `json:"evidence_summary,omitempty"`
-	RootCause        string   `json:"root_cause,omitempty"`
-	ResolutionSteps  []string `json:"resolution_steps,omitempty"`
-	ResolutionResult string   `json:"resolution_result,omitempty"`
+	AlertSymptoms    string             `json:"alert_symptoms,omitempty"`
+	EnvironmentTags  []string           `json:"environment_tags,omitempty"`
+	EvidenceSummary  string             `json:"evidence_summary,omitempty"`
+	RootCause        string             `json:"root_cause,omitempty"`
+	ResolutionSteps  []string           `json:"resolution_steps,omitempty"`
+	ResolutionResult string             `json:"resolution_result,omitempty"`
+	Status           IncidentCaseStatus `json:"status"`
+	SourceRunID      string             `json:"source_run_id,omitempty"`
+	ReviewedBy       string             `json:"reviewed_by,omitempty"`
+	ReviewedAt       *time.Time         `json:"reviewed_at,omitempty"`
+	ReviewNote       string             `json:"review_note,omitempty"`
+	// EmbeddingStatus is read-only operational metadata exposed with knowledge
+	// browsing. It never contains provider errors or vector contents.
+	EmbeddingStatus string `json:"embedding_status,omitempty"`
 }
+
+// IncidentCaseStatus keeps unverified model output out of the retrieval corpus.
+type IncidentCaseStatus string
+
+const (
+	IncidentCaseStatusPendingReview IncidentCaseStatus = "pending_review"
+	IncidentCaseStatusApproved      IncidentCaseStatus = "approved"
+	IncidentCaseStatusRejected      IncidentCaseStatus = "rejected"
+)
 
 type IncidentCaseFilter struct {
 	Query           string
@@ -274,6 +307,7 @@ type IncidentCaseFilter struct {
 	FaultType       string
 	EnvironmentTags []string
 	Limit           int
+	Status          IncidentCaseStatus
 }
 
 type MetricsSnapshot struct {
@@ -286,6 +320,24 @@ type MetricsSnapshot struct {
 	JobSuccessRate            float64 `json:"job_success_rate"`
 	JobFailureRate            float64 `json:"job_failure_rate"`
 	AvgScheduleLatencySeconds float64 `json:"avg_schedule_latency_seconds"`
+}
+
+type RAGMetrics struct {
+	Queued int `json:"queued"`
+	Ready  int `json:"ready"`
+	Failed int `json:"failed"`
+}
+
+// IncidentCaseEmbeddingStatus is operational metadata for an approved case's
+// vector. It is deliberately kept separate from the reviewed case content.
+type IncidentCaseEmbeddingStatus struct {
+	CaseID        string     `json:"case_id"`
+	CaseTitle     string     `json:"case_title,omitempty"`
+	Status        string     `json:"status"`
+	Attempts      int        `json:"attempts"`
+	LastError     string     `json:"last_error,omitempty"`
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // HostInfo represents host-level information collected by workers.

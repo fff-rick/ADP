@@ -14,33 +14,117 @@ import (
 // MemoryRepository implements Repository using the in-memory scheduler.Store.
 // This is used as a fallback when no database is configured, and for testing.
 type MemoryRepository struct {
-	store          *scheduler.Store
-	managedConfigs map[string]model.ManagedConfig
-	convMu         sync.RWMutex
-	conversations  map[string]model.Conversation
-	messages       map[string][]model.ConversationMessage // keyed by conversationID
-	convIDSeq      atomic.Uint64
-	convMsgIDSeq   atomic.Int64
-	agentMu        sync.RWMutex
-	agentRuns      map[string]model.AgentRun
-	agentEvents    map[string][]model.AgentEvent
-	agentCalls     map[string]model.AgentToolCall
-	agentEventSeq  atomic.Int64
-	jobIdempotency map[string]string
+	store            *scheduler.Store
+	managedConfigs   map[string]model.ManagedConfig
+	convMu           sync.RWMutex
+	conversations    map[string]model.Conversation
+	messages         map[string][]model.ConversationMessage // keyed by conversationID
+	convIDSeq        atomic.Uint64
+	convMsgIDSeq     atomic.Int64
+	agentMu          sync.RWMutex
+	agentRuns        map[string]model.AgentRun
+	agentEvents      map[string][]model.AgentEvent
+	agentCalls       map[string]model.AgentToolCall
+	agentSnapshots   map[string][]model.AgentContextSnapshot
+	agentEventSeq    atomic.Int64
+	agentSnapshotSeq atomic.Int64
+	jobIdempotency   map[string]string
+	embeddingQueue   map[string]struct{}
+	embeddingStates  map[string]model.IncidentCaseEmbeddingStatus
 }
 
 // NewMemoryRepository creates a new in-memory repository.
 func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{
-		store:          scheduler.NewStore(),
-		managedConfigs: make(map[string]model.ManagedConfig),
-		conversations:  make(map[string]model.Conversation),
-		messages:       make(map[string][]model.ConversationMessage),
-		agentRuns:      make(map[string]model.AgentRun),
-		agentEvents:    make(map[string][]model.AgentEvent),
-		agentCalls:     make(map[string]model.AgentToolCall),
-		jobIdempotency: make(map[string]string),
+		store:           scheduler.NewStore(),
+		managedConfigs:  make(map[string]model.ManagedConfig),
+		conversations:   make(map[string]model.Conversation),
+		messages:        make(map[string][]model.ConversationMessage),
+		agentRuns:       make(map[string]model.AgentRun),
+		agentEvents:     make(map[string][]model.AgentEvent),
+		agentCalls:      make(map[string]model.AgentToolCall),
+		agentSnapshots:  make(map[string][]model.AgentContextSnapshot),
+		jobIdempotency:  make(map[string]string),
+		embeddingQueue:  make(map[string]struct{}),
+		embeddingStates: make(map[string]model.IncidentCaseEmbeddingStatus),
 	}
+}
+
+func (r *MemoryRepository) QueueIncidentCaseEmbedding(caseID, _, _ string, _ int) error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	r.embeddingQueue[caseID] = struct{}{}
+	r.embeddingStates[caseID] = model.IncidentCaseEmbeddingStatus{CaseID: caseID, Status: "queued", UpdatedAt: time.Now()}
+	return nil
+}
+func (r *MemoryRepository) ListQueuedIncidentCaseEmbeddingIDs(limit int) ([]string, error) {
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	var ids []string
+	for id := range r.embeddingQueue {
+		ids = append(ids, id)
+		if limit > 0 && len(ids) >= limit {
+			break
+		}
+	}
+	return ids, nil
+}
+func (r *MemoryRepository) CompleteIncidentCaseEmbedding(caseID, _, _ string) error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	delete(r.embeddingQueue, caseID)
+	status := r.embeddingStates[caseID]
+	status.CaseID, status.Status, status.Attempts, status.LastError, status.UpdatedAt = caseID, "ready", status.Attempts+1, "", time.Now()
+	r.embeddingStates[caseID] = status
+	return nil
+}
+func (r *MemoryRepository) FailIncidentCaseEmbedding(caseID, message string) error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	delete(r.embeddingQueue, caseID)
+	status := r.embeddingStates[caseID]
+	status.CaseID, status.Status, status.Attempts, status.LastError, status.UpdatedAt = caseID, "failed", status.Attempts+1, message, time.Now()
+	r.embeddingStates[caseID] = status
+	return nil
+}
+func (r *MemoryRepository) RetryIncidentCaseEmbedding(caseID string) error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	r.embeddingQueue[caseID] = struct{}{}
+	r.embeddingStates[caseID] = model.IncidentCaseEmbeddingStatus{CaseID: caseID, Status: "queued", UpdatedAt: time.Now()}
+	return nil
+}
+func (r *MemoryRepository) ListFailedIncidentCaseEmbeddings(limit int) ([]model.IncidentCaseEmbeddingStatus, error) {
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	var statuses []model.IncidentCaseEmbeddingStatus
+	for _, status := range r.embeddingStates {
+		if status.Status == "failed" {
+			statuses = append(statuses, status)
+		}
+	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].UpdatedAt.After(statuses[j].UpdatedAt) })
+	if limit > 0 && len(statuses) > limit {
+		statuses = statuses[:limit]
+	}
+	return statuses, nil
+}
+func (r *MemoryRepository) SearchIncidentCaseEmbeddingIDs(_ string, _ string, _ model.IncidentCaseFilter, _ int) ([]string, error) {
+	return nil, nil
+}
+func (r *MemoryRepository) RAGMetrics() (model.RAGMetrics, error) {
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	metrics := model.RAGMetrics{Queued: len(r.embeddingQueue)}
+	for _, status := range r.embeddingStates {
+		switch status.Status {
+		case "ready":
+			metrics.Ready++
+		case "failed":
+			metrics.Failed++
+		}
+	}
+	return metrics, nil
 }
 
 // Store returns the underlying scheduler.Store for compatibility.
@@ -284,11 +368,41 @@ func (r *MemoryRepository) UpsertIncidentCase(planID string, c model.IncidentCas
 		ResolutionSteps:  c.ResolutionSteps,
 		ResolutionResult: c.ResolutionResult,
 	}
-	return r.store.UpsertIncidentCase(plan, report), nil
+	saved := r.store.UpsertIncidentCase(plan, report)
+	if c.Status != "" || c.SourceRunID != "" {
+		saved, _ = r.store.SetIncidentCaseMetadata(saved.ID, c.Status, c.SourceRunID)
+	}
+	return saved, nil
+}
+
+func (r *MemoryRepository) GetIncidentCase(id string) (model.IncidentCase, error) {
+	c, ok := r.store.GetIncidentCase(id)
+	if !ok {
+		return model.IncidentCase{}, errNotFound("incident case", id)
+	}
+	return c, nil
+}
+
+func (r *MemoryRepository) ReviewIncidentCase(id string, status model.IncidentCaseStatus, reviewedBy, note string, updates model.IncidentCase) (model.IncidentCase, error) {
+	c, ok := r.store.ReviewIncidentCase(id, status, reviewedBy, note, updates)
+	if !ok {
+		return model.IncidentCase{}, errNotFound("incident case", id)
+	}
+	return c, nil
 }
 
 func (r *MemoryRepository) ListIncidentCases(filter model.IncidentCaseFilter) ([]model.IncidentCase, error) {
-	return r.store.ListIncidentCases(filter), nil
+	cases := r.store.ListIncidentCases(filter)
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	for i := range cases {
+		if state, ok := r.embeddingStates[cases[i].ID]; ok {
+			cases[i].EmbeddingStatus = state.Status
+		} else {
+			cases[i].EmbeddingStatus = "not_indexed"
+		}
+	}
+	return cases, nil
 }
 
 func (r *MemoryRepository) FindSimilarIncidentCases(description, triggerType, faultType string, limit int) ([]model.IncidentCase, error) {
@@ -549,6 +663,30 @@ func (r *MemoryRepository) CompleteAgentToolCall(call model.AgentToolCall) error
 	old.CompletedAt = &now
 	r.agentCalls[call.ID] = old
 	return nil
+}
+
+func (r *MemoryRepository) CreateAgentContextSnapshot(snapshot model.AgentContextSnapshot) (model.AgentContextSnapshot, error) {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	if _, ok := r.agentRuns[snapshot.RunID]; !ok {
+		return model.AgentContextSnapshot{}, errNotFound("agent run", snapshot.RunID)
+	}
+	snapshot.ID = r.agentSnapshotSeq.Add(1)
+	snapshot.CreatedAt = time.Now()
+	r.agentSnapshots[snapshot.RunID] = append(r.agentSnapshots[snapshot.RunID], snapshot)
+	return snapshot, nil
+}
+
+func (r *MemoryRepository) ListAgentContextSnapshots(runID string) ([]model.AgentContextSnapshot, error) {
+	r.agentMu.RLock()
+	defer r.agentMu.RUnlock()
+	items := r.agentSnapshots[runID]
+	if items == nil {
+		return []model.AgentContextSnapshot{}, nil
+	}
+	out := make([]model.AgentContextSnapshot, len(items))
+	copy(out, items)
+	return out, nil
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

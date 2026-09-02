@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 -- 故障案例表
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS incident_cases (
     id              VARCHAR(64) PRIMARY KEY,
     title           VARCHAR(512) NOT NULL DEFAULT '',
@@ -104,9 +106,66 @@ ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS evidence_summary TEXT NOT NU
 ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS root_cause TEXT NOT NULL DEFAULT '';
 ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS resolution_steps TEXT[] NOT NULL DEFAULT '{}';
 ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS resolution_result TEXT NOT NULL DEFAULT '';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'approved';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS source_run_id VARCHAR(64) NOT NULL DEFAULT '';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(128) NOT NULL DEFAULT '';
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE incident_cases ADD COLUMN IF NOT EXISTS review_note TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_incident_cases_trigger_type ON incident_cases(trigger_type);
 CREATE INDEX IF NOT EXISTS idx_incident_cases_fault_type ON incident_cases(fault_type);
 CREATE INDEX IF NOT EXISTS idx_incident_cases_environment_tags ON incident_cases USING GIN(environment_tags);
+CREATE INDEX IF NOT EXISTS idx_incident_cases_status ON incident_cases(status);
+
+-- One active, versioned embedding per approved incident case.  The source
+-- document is rebuilt from reviewed fields, never copied from raw tool logs.
+CREATE TABLE IF NOT EXISTS incident_case_embeddings (
+    case_id          VARCHAR(64) PRIMARY KEY REFERENCES incident_cases(id) ON DELETE CASCADE,
+    content_hash     CHAR(64) NOT NULL,
+    embedding_model  VARCHAR(256) NOT NULL,
+    dimensions       SMALLINT NOT NULL DEFAULT 1024 CHECK (dimensions = 1024),
+    embedding        vector(1024),
+    status           VARCHAR(32) NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'ready', 'failed')),
+    attempts         INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    next_attempt_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error       TEXT NOT NULL DEFAULT '',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE incident_case_embeddings ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+-- Migrate the initial 1536-dimensional corpus to the 1024-dimensional
+-- Cloudflare bge-m3 deployment. Existing vectors cannot be projected safely,
+-- so they are discarded and regenerated from the reviewed source fields.
+ALTER TABLE incident_case_embeddings DROP CONSTRAINT IF EXISTS incident_case_embeddings_dimensions_check;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        WHERE c.relname = 'incident_case_embeddings'
+          AND a.attname = 'embedding'
+          AND a.attnum > 0
+          AND a.atttypmod <> 1024
+    ) THEN
+        DROP INDEX IF EXISTS idx_incident_case_embeddings_hnsw;
+        UPDATE incident_case_embeddings
+           SET embedding = NULL,
+               dimensions = 1024,
+               status = 'queued',
+               attempts = 0,
+               next_attempt_at = NOW(),
+               last_error = '',
+               updated_at = NOW();
+        ALTER TABLE incident_case_embeddings
+            ALTER COLUMN embedding TYPE vector(1024) USING embedding::vector(1024);
+    END IF;
+END $$;
+ALTER TABLE incident_case_embeddings ALTER COLUMN dimensions SET DEFAULT 1024;
+ALTER TABLE incident_case_embeddings
+    ADD CONSTRAINT incident_case_embeddings_dimensions_check CHECK (dimensions = 1024);
+CREATE INDEX IF NOT EXISTS idx_incident_case_embeddings_queue ON incident_case_embeddings(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_incident_case_embeddings_hnsw ON incident_case_embeddings
+    USING hnsw (embedding vector_cosine_ops) WHERE status = 'ready';
 
 -- Job YAML 模板表
 CREATE TABLE IF NOT EXISTS job_yamls (
@@ -224,3 +283,19 @@ CREATE TABLE IF NOT EXISTS agent_tool_calls (
     completed_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_agent_tool_calls_run_id ON agent_tool_calls(run_id, step);
+
+-- Sanitized prompt projections are immutable evidence of what a model saw at
+-- each step. They are distinct from the canonical recovery transcript.
+CREATE TABLE IF NOT EXISTS agent_context_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    run_id VARCHAR(64) NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    step INTEGER NOT NULL,
+    transcript_version INTEGER NOT NULL,
+    token_estimate INTEGER NOT NULL,
+    budget_tokens INTEGER NOT NULL DEFAULT 0,
+    decisions JSONB NOT NULL DEFAULT '{}',
+    messages JSONB NOT NULL DEFAULT '[]',
+    content_sha256 VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_context_snapshots_run_step ON agent_context_snapshots(run_id, step, id);

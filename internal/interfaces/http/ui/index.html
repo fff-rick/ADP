@@ -43,6 +43,7 @@
       <a class="nav-link" href="/workers">Workers</a>
       <a class="nav-link" href="/jobs">Jobs</a>
       <a class="nav-link" href="/tasks">Agent</a>
+      <a class="nav-link" href="/knowledge">知识库</a>
       <a class="nav-link" href="/configs">配置</a>
     </nav>
 
@@ -94,8 +95,8 @@
         </div>
       </div>
 
-      <!-- Approvals + Audit -->
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;" class="scroll-reveal stagger-2">
+      <!-- Approvals + Case Review + Audit -->
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;" class="scroll-reveal stagger-2">
         <div class="panel-shell">
           <div class="panel-core">
             <div class="panel-heading">
@@ -103,6 +104,26 @@
               <span class="panel-title">待审批任务</span>
             </div>
             <div id="approval-list"></div>
+          </div>
+        </div>
+
+        <div class="panel-shell">
+          <div class="panel-core">
+            <div class="panel-heading">
+              <span class="panel-index">知识库</span>
+              <span class="panel-title">待审核案例</span>
+            </div>
+            <div id="case-review-list"></div>
+          </div>
+        </div>
+
+        <div class="panel-shell">
+          <div class="panel-core">
+            <div class="panel-heading">
+              <span class="panel-index">RAG</span>
+              <span class="panel-title">向量失败任务</span>
+            </div>
+            <div id="embedding-failure-list"></div>
           </div>
         </div>
 
@@ -118,6 +139,19 @@
       </div>
     </main>
   </div>
+
+  <dialog id="case-review-dialog" style="max-width:680px;width:calc(100% - 32px);border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text-primary);padding:0;">
+    <form id="case-review-form" style="padding:22px;display:grid;gap:12px;">
+      <div class="panel-heading"><span class="panel-index">知识库</span><span class="panel-title">审核并修订案例</span></div>
+      <input id="case-review-id" type="hidden">
+      <label>根因<textarea id="case-review-root-cause" rows="3" style="width:100%;margin-top:4px;"></textarea></label>
+      <label>处置步骤（每行一项）<textarea id="case-review-steps" rows="4" style="width:100%;margin-top:4px;"></textarea></label>
+      <label>环境标签（逗号分隔）<input id="case-review-tags" type="text" style="width:100%;margin-top:4px;"></label>
+      <label>处置结果<textarea id="case-review-result" rows="2" style="width:100%;margin-top:4px;"></textarea></label>
+      <label>审核备注<textarea id="case-review-note" rows="2" style="width:100%;margin-top:4px;"></textarea></label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;"><button id="case-review-cancel" class="btn btn-xs btn-ghost" type="button">取消</button><button class="btn btn-xs btn-ghost" type="button" data-case-dialog-action="reject">拒绝</button><button class="btn btn-xs btn-primary" type="button" data-case-dialog-action="approve">修订并通过</button></div>
+    </form>
+  </dialog>
 
   <div id="toast" class="toast" hidden></div>
   <script src="/static/app.js" defer></script>

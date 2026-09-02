@@ -10,17 +10,19 @@ import (
 )
 
 type dashboardSummaryResponse struct {
-	User             model.User              `json:"user"`
-	CurrentTime      string                  `json:"current_time"`
-	Metrics          model.MetricsSnapshot   `json:"metrics"`
-	AgentMetrics     map[string]float64      `json:"agent_metrics"`
-	RecentJobs       []model.Job             `json:"recent_jobs"`
-	Workers          []model.Worker          `json:"workers"`
-	PendingApprovals []model.Job             `json:"pending_approvals"`
-	RecentCases      []model.IncidentCase    `json:"recent_cases"`
-	RecentAuditLogs  []model.AuditLog        `json:"recent_audit_logs"`
-	TemplatesTotal   int                     `json:"templates_total"`
-	Templates        []model.CommandTemplate `json:"templates"`
+	User              model.User              `json:"user"`
+	CurrentTime       string                  `json:"current_time"`
+	Metrics           model.MetricsSnapshot   `json:"metrics"`
+	AgentMetrics      map[string]float64      `json:"agent_metrics"`
+	RAGMetrics        model.RAGMetrics        `json:"rag_metrics"`
+	RAGRuntimeMetrics map[string]float64      `json:"rag_runtime_metrics"`
+	RecentJobs        []model.Job             `json:"recent_jobs"`
+	Workers           []model.Worker          `json:"workers"`
+	PendingApprovals  []model.Job             `json:"pending_approvals"`
+	RecentCases       []model.IncidentCase    `json:"recent_cases"`
+	RecentAuditLogs   []model.AuditLog        `json:"recent_audit_logs"`
+	TemplatesTotal    int                     `json:"templates_total"`
+	Templates         []model.CommandTemplate `json:"templates"`
 }
 
 func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +33,7 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 		cases   []model.IncidentCase
 		logs    []model.AuditLog
 		metrics model.MetricsSnapshot
+		rag     model.RAGMetrics
 	)
 
 	if s.repo != nil {
@@ -55,6 +58,7 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 			logs = []model.AuditLog{}
 		}
 		metrics, _ = s.repo.MetricsSnapshot()
+		rag, _ = s.repo.RAGMetrics()
 	}
 
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].CreatedAt.After(jobs[j].CreatedAt) })
@@ -67,17 +71,19 @@ func (s *Server) handleDashboardSummary(w http.ResponseWriter, r *http.Request) 
 	logs = limitAuditLogs(logs, 8)
 
 	writeJSON(w, http.StatusOK, dashboardSummaryResponse{
-		User:             currentUser(r),
-		CurrentTime:      time.Now().Format(time.RFC3339),
-		Metrics:          metrics,
-		AgentMetrics:     s.agentMetrics.dashboard(),
-		RecentJobs:       jobs,
-		Workers:          workers,
-		PendingApprovals: pending,
-		RecentCases:      cases,
-		RecentAuditLogs:  logs,
-		TemplatesTotal:   len(s.templateEng.ListTemplates()),
-		Templates:        s.templateEng.ListTemplates(),
+		User:              currentUser(r),
+		CurrentTime:       time.Now().Format(time.RFC3339),
+		Metrics:           metrics,
+		AgentMetrics:      s.agentMetrics.dashboard(),
+		RAGMetrics:        rag,
+		RAGRuntimeMetrics: s.ragMetrics.dashboard(),
+		RecentJobs:        jobs,
+		Workers:           workers,
+		PendingApprovals:  pending,
+		RecentCases:       cases,
+		RecentAuditLogs:   logs,
+		TemplatesTotal:    len(s.templateEng.ListTemplates()),
+		Templates:         s.templateEng.ListTemplates(),
 	})
 }
 

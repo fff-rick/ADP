@@ -1,0 +1,13 @@
+[
+  {
+    "id": "failed-job-and-approval-survive-compression",
+    "turns": [
+      {"user": "检查 worker-01", "assistant": "已发现 worker-01。"},
+      {"user": "执行 nginx 检查", "tool_name": "get_job_result", "tool_data": {"worker_id": "worker-01", "status": "failed", "exit_code": 13, "error": "permission denied"}, "assistant": "检查失败，错误码 13。"},
+      {"user": "需要审批吗", "assistant": "重启动作需要人工审批。"},
+      {"user": "给出当前状态", "assistant": "等待确认权限配置。"},
+      {"user": "继续诊断", "assistant": "将先验证 worker-01 的实时状态。"}
+    ],
+    "required_context": ["worker-01", "permission denied", "13", "人工审批", "继续诊断"]
+  }
+]

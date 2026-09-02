@@ -34,10 +34,20 @@ type Config struct {
 	LLMAPIKey                    string
 	LLMModel                     string
 	AgentMaxSteps                int
+	AgentContextWindowTokens     int
+	AgentReservedOutputTokens    int
+	AgentContextHardUsageRatio   float64
+	AgentToolEvidenceMaxTokens   int
+	AgentContextShadowEnabled    bool
 	AgentInputTokenCostUSDPer1K  float64
 	AgentOutputTokenCostUSDPer1K float64
 	ManagedConfigDir             string
 	ManagedConfigSyncMode        string
+	RAGEnabled                   bool
+	RAGEmbeddingBaseURL          string
+	RAGEmbeddingAPIKey           string
+	RAGEmbeddingModel            string
+	RAGEmbeddingDimensions       int
 }
 
 // HasLLM returns true if an LLM is configured.
@@ -52,8 +62,11 @@ type Server struct {
 	moduleReg    *module.Registry
 	workerHub    *workerstream.Hub
 	llmClient    llm.Client
+	embeddings   llm.EmbeddingClient
 	agentRuntime *agent.Runtime
 	agentMetrics *agentMetrics
+	ragMetrics   *ragRuntimeMetrics
+	agentEvents  *agentEventHub
 	httpServer   *http.Server
 }
 
@@ -76,6 +89,10 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	if cfg.LLMBaseURL != "" {
 		llmClient = llm.NewHTTPClient(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel)
 	}
+	var embeddings llm.EmbeddingClient
+	if cfg.RAGEnabled && cfg.RAGEmbeddingBaseURL != "" && cfg.RAGEmbeddingModel != "" && cfg.RAGEmbeddingDimensions > 0 {
+		embeddings = llm.NewHTTPEmbeddingClient(cfg.RAGEmbeddingBaseURL, cfg.RAGEmbeddingAPIKey, cfg.RAGEmbeddingModel, cfg.RAGEmbeddingDimensions)
+	}
 
 	if authSvc == nil {
 		authSvc = auth.NewService(cfg.AdminUsername, cfg.AdminPassword, cfg.AuthSecret)
@@ -90,10 +107,21 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 		moduleReg:    moduleReg,
 		workerHub:    workerstream.NewHub(),
 		llmClient:    llmClient,
+		embeddings:   embeddings,
 		agentMetrics: &agentMetrics{inputTokenCostPer1K: cfg.AgentInputTokenCostUSDPer1K, outputTokenCostPer1K: cfg.AgentOutputTokenCostUSDPer1K},
+		ragMetrics:   &ragRuntimeMetrics{},
+		agentEvents:  newAgentEventHub(),
 	}
-	server.agentRuntime = agent.New(llmClient, server.agentTools(), cfg.AgentMaxSteps, 0)
+	server.agentRuntime = agent.New(llmClient, server.agentTools(), cfg.AgentMaxSteps, 0).WithContextBudget(agent.ContextBudget{
+		ModelContextWindowTokens: cfg.AgentContextWindowTokens,
+		ReservedOutputTokens:     cfg.AgentReservedOutputTokens,
+		HardUsageRatio:           cfg.AgentContextHardUsageRatio,
+		ToolEvidenceMaxTokens:    cfg.AgentToolEvidenceMaxTokens,
+	})
 	go server.resumeInterruptedAgentRuns()
+	if embeddings != nil {
+		go server.runEmbeddingQueue()
+	}
 
 	if _, err := server.syncManagedConfigs(cfg.ManagedConfigDir, cfg.ManagedConfigSyncMode == "enforce"); err != nil {
 		log.Printf("WARNING: failed to bootstrap managed configs: %v", err)
@@ -111,6 +139,7 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	mux.HandleFunc("GET /jobs", server.handleDashboardPage)
 	mux.HandleFunc("GET /tasks", server.handleDashboardPage)
 	mux.HandleFunc("GET /configs", server.handleDashboardPage)
+	mux.HandleFunc("GET /knowledge", server.handleDashboardPage)
 	mux.Handle("GET /static/", server.staticAssetsHandler())
 	// Health & metrics
 	mux.HandleFunc("GET /healthz", server.handleHealthz)
@@ -159,6 +188,10 @@ func NewServer(cfg Config, repo db.Repository, authSvc *auth.Service) *Server {
 	// Cases
 	mux.HandleFunc("GET /api/v1/cases", server.withUserAuth(server.handleListIncidentCases))
 	mux.HandleFunc("GET /api/v1/cases/suggestions", server.withUserAuth(server.handleSuggestIncidentCases))
+	mux.HandleFunc("POST /api/v1/cases/import", server.withAdminAuth(server.handleImportIncidentCaseMarkdown))
+	mux.HandleFunc("GET /api/v1/cases/pending", server.withAdminAuth(server.handleListPendingIncidentCases))
+	mux.HandleFunc("GET /api/v1/cases/embedding/failed", server.withAdminAuth(server.handleListFailedIncidentCaseEmbeddings))
+	mux.HandleFunc("POST /api/v1/cases/", server.withAdminAuth(server.handleIncidentCaseActions))
 	// Runtime managed configs: modules/templates and policies.
 	mux.HandleFunc("GET /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))
 	mux.HandleFunc("POST /api/v1/configs/", server.withAdminAuth(server.handleManagedConfigActions))

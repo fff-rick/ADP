@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -20,12 +21,13 @@ const SystemPrompt = `You are ADP, a controlled operations agent for infrastruct
 3. Use only registered modules through create_module_operation. Shell commands, SQL, YAML and arbitrary files are never available.
 4. Never invent worker IDs, module codes, commands, YAML, credentials, or skip approvals.
 5. Observe each tool result before deciding the next step.
-6. For diagnosis requests, search_incident_cases before proposing a cause when historical cases may help. Historical cases are suggestions, never current facts.
+6. Search search_incident_cases before proposing a cause whenever historical cases may help. This is required both for explicit diagnosis requests and after get_job_result reports a failed or cancelled operation (especially permission, polkit, EACCES, or "permission denied" errors). Historical cases are suggestions, never current facts.
 7. The final report MUST have two headings: "本次工具证据" (only facts obtained from this run's live tools) and "历史参考案例" (only historical case IDs and recommendations). Do not describe historical results as current observations.
 8. Be concise. Summarize findings, don't repeat raw JSON.
 
 ## Failure handling
 - If a command fails due to permissions (polkit, EACCES, "permission denied"), do NOT retry with variations like sudo or alternative syntax. Tell the user what failed and suggest they configure sudoers on the Worker.
+- After a failed or cancelled operation, search the reviewed incident cases using the error output before giving the final report. If no case matches, explicitly say that no historical case was found.
 - After 2 consecutive failures for the same goal, STOP and tell the user. Do not keep retrying.
 - Before running a risky command, first check if a simpler read-only diagnostic can confirm the state.
 
@@ -56,6 +58,10 @@ type Result struct {
 
 // Observer receives durable protocol boundaries. Returning an error stops the run.
 type Observer struct {
+	// BeforeModel runs after the complete request has been assembled and before
+	// it crosses the provider boundary. It is used to persist the exact,
+	// sanitized context projection for audit and recovery.
+	BeforeModel     func(step int, messages []llm.Message, definitions []llm.ToolDefinition, tokenEstimate, budgetTokens int) error
 	OnModelComplete func(step int, latency time.Duration, usage llm.Usage) error
 	OnAssistant     func(step int, message llm.Message) error
 	OnToolCall      func(step int, call llm.ToolCall) error
@@ -84,6 +90,32 @@ type Runtime struct {
 	tools    map[string]Tool
 	maxSteps int
 	timeout  time.Duration
+	budget   ContextBudget
+}
+
+// ContextBudget is deliberately provider-neutral. A zero window records token
+// estimates but does not reject calls, which preserves compatibility until a
+// model-specific context window is configured.
+type ContextBudget struct {
+	ModelContextWindowTokens int
+	ReservedOutputTokens     int
+	HardUsageRatio           float64
+	ToolEvidenceMaxTokens    int
+}
+
+func (b ContextBudget) inputBudget() int {
+	if b.ModelContextWindowTokens <= 0 {
+		return 0
+	}
+	ratio := b.HardUsageRatio
+	if ratio <= 0 || ratio > 1 {
+		ratio = 0.80
+	}
+	available := b.ModelContextWindowTokens - b.ReservedOutputTokens
+	if available < 0 {
+		return 0
+	}
+	return int(float64(available) * ratio)
 }
 
 func New(client llm.Client, tools []Tool, maxSteps int, timeout time.Duration) *Runtime {
@@ -98,6 +130,11 @@ func New(client llm.Client, tools []Tool, maxSteps int, timeout time.Duration) *
 		registered[tool.Definition().Name] = tool
 	}
 	return &Runtime{client: client, tools: registered, maxSteps: maxSteps, timeout: timeout}
+}
+
+func (r *Runtime) WithContextBudget(budget ContextBudget) *Runtime {
+	r.budget = budget
+	return r
 }
 
 func (r *Runtime) Run(ctx context.Context, input string, history []llm.Message) (Result, error) {
@@ -122,6 +159,7 @@ func (r *Runtime) RunMessages(ctx context.Context, messages []llm.Message, start
 	if r.client == nil {
 		return Result{}, fmt.Errorf("agent model is not configured")
 	}
+	messages = sanitizeMessages(messages)
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 	definitions := make([]llm.ToolDefinition, 0, len(r.tools))
@@ -136,6 +174,16 @@ func (r *Runtime) RunMessages(ctx context.Context, messages []llm.Message, start
 	for step := startStep; step <= r.maxSteps; step++ {
 		started := time.Now()
 		request := llm.CompletionRequest{Messages: messages, Tools: definitions}
+		tokenEstimate := EstimateRequestTokens(request)
+		budgetTokens := r.budget.inputBudget()
+		if observer.BeforeModel != nil {
+			if err := observer.BeforeModel(step, cloneMessages(messages), definitions, tokenEstimate, budgetTokens); err != nil {
+				return result, err
+			}
+		}
+		if budgetTokens > 0 && tokenEstimate > budgetTokens {
+			return result, fmt.Errorf("agent context budget exceeded at step %d: estimated %d tokens, budget %d", step, tokenEstimate, budgetTokens)
+		}
 		var completion llm.Completion
 		var err error
 		if streamClient, ok := r.client.(llm.StreamingClient); ok && stream != nil {
@@ -162,6 +210,7 @@ func (r *Runtime) RunMessages(ctx context.Context, messages []llm.Message, start
 			}
 		}
 		result.Steps = step
+		completion.Message.Content = model.SanitizeText(completion.Message.Content)
 		messages = append(messages, completion.Message)
 		if observer.OnAssistant != nil {
 			if err := observer.OnAssistant(step, completion.Message); err != nil {
@@ -177,6 +226,14 @@ func (r *Runtime) RunMessages(ctx context.Context, messages []llm.Message, start
 			}
 		}
 		if len(completion.Message.ToolCalls) == 0 {
+			if historicalSearchRequired(result.Events) {
+				// A job result may contain the only actionable failure signal after an
+				// approval-resumed run. Do not allow the model to skip the historical
+				// retrieval mandated by the policy merely because the original request
+				// was an operation rather than a diagnosis.
+				messages = append(messages, llm.Message{Role: "system", Content: "A get_job_result tool result reports a failed or cancelled operation. Before you give a final answer, you MUST call search_incident_cases with the relevant error output. The result is historical reference only."})
+				continue
+			}
 			result.Answer = ensureEvidenceSections(completion.Message.Content, result.Events)
 			return result, nil
 		}
@@ -213,7 +270,7 @@ func (r *Runtime) RunMessages(ctx context.Context, messages []llm.Message, start
 				recordDiscoveredWorkers(payload, discoveredWorkers)
 			}
 			encoded, _ := json.Marshal(payload)
-			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Content: string(encoded)})
+			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Content: r.compactToolResult(ctx, call, payload, encoded)})
 			if observer.OnToolResult != nil {
 				if err := observer.OnToolResult(step, call, payload); err != nil {
 					return result, err
@@ -234,6 +291,94 @@ func (r *Runtime) RunMessages(ctx context.Context, messages []llm.Message, start
 		}
 	}
 	return result, fmt.Errorf("agent exceeded maximum of %d steps", r.maxSteps)
+}
+
+func (r *Runtime) compactToolResult(ctx context.Context, call llm.ToolCall, payload map[string]any, encoded []byte) string {
+	maxTokens := r.budget.ToolEvidenceMaxTokens
+	if maxTokens <= 0 || EstimateTextTokens(string(encoded)) <= maxTokens {
+		return string(encoded)
+	}
+	maxBytes := maxTokens * 2
+	preview := model.SanitizeText(string(encoded))
+	if len(preview) > maxBytes {
+		preview = preview[:maxBytes] + "…[truncated]"
+	}
+	digest := sha256.Sum256(encoded)
+	card := map[string]any{
+		"ok":            payload["ok"],
+		"evidence_ref":  RunID(ctx) + ":" + call.ID,
+		"tool":          call.Name,
+		"result_sha256": fmt.Sprintf("%x", digest),
+		"truncated":     true,
+		"summary":       preview,
+	}
+	if errText, ok := payload["error"].(string); ok && errText != "" {
+		card["error"] = errText
+	}
+	compacted, err := json.Marshal(card)
+	if err != nil {
+		return string(encoded)
+	}
+	return string(compacted)
+}
+
+// EstimateRequestTokens uses a conservative, provider-neutral byte estimate.
+// Provider-reported usage is still recorded after completion for calibration;
+// configured hard budgets fail closed before a potentially over-window call.
+func EstimateRequestTokens(request llm.CompletionRequest) int {
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return 0
+	}
+	// Two UTF-8 bytes per token is conservative for English, CJK text and JSON
+	// punctuation. Add protocol overhead that JSON serialization cannot model.
+	return (len(encoded)+1)/2 + 16*(len(request.Messages)+len(request.Tools))
+}
+
+func EstimateTextTokens(text string) int {
+	return (len(text) + 1) / 2
+}
+
+func cloneMessages(in []llm.Message) []llm.Message {
+	out := make([]llm.Message, len(in))
+	copy(out, in)
+	return out
+}
+
+func sanitizeMessages(in []llm.Message) []llm.Message {
+	out := cloneMessages(in)
+	for i := range out {
+		out[i].Content = model.SanitizeText(out[i].Content)
+	}
+	return out
+}
+
+func historicalSearchRequired(events []Event) bool {
+	searched := false
+	failed := false
+	for _, event := range events {
+		if event.Type != "tool" {
+			continue
+		}
+		if event.Name == "search_incident_cases" {
+			searched = true
+			continue
+		}
+		if event.Name != "get_job_result" {
+			continue
+		}
+		payload, _ := event.Data.(map[string]any)
+		result, _ := payload["result"].(map[string]any)
+		jobs, _ := result["results"].([]map[string]any)
+		for _, job := range jobs {
+			status := fmt.Sprint(job["status"])
+			if status == string(model.JobStatusFailed) || status == string(model.JobStatusCancelled) {
+				failed = true
+				break
+			}
+		}
+	}
+	return failed && !searched
 }
 
 // ensureEvidenceSections makes the provenance boundary non-optional even if a
